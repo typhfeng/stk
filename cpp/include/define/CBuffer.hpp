@@ -66,14 +66,14 @@ public:
 
   const T &front() const {
     if (size_ == 0) [[unlikely]] {
-      throw std::out_of_range("Buffer is empty");
+      throw std::out_of_range("Buffer front is empty");
     }
     return data_[start_];
   }
 
   const T &back() const {
     if (size_ == 0) [[unlikely]] {
-      throw std::out_of_range("Buffer is empty");
+      throw std::out_of_range("Buffer back is empty");
     }
     size_t last_index = (start_ + size_ - 1) % N;
     return data_[last_index];

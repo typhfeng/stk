@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cassert>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -50,4 +51,5 @@ inline void print_progress(size_t current, size_t total) {
     std::chrono::time_point<std::chrono::high_resolution_clock> start_;
   };
 }
-} // namespace misc
+
+}

@@ -6,6 +6,7 @@
 
 #include "define/CBuffer.hpp"
 #include "define/Dtype.hpp"
+#include "sample/ResampleRunBar.hpp"
 #include "technical_analysis.hpp"
 
 #include "math/LimitOrderBook.hpp"
@@ -13,23 +14,42 @@
 // #define PRINT_SNAPSHOT
 // #define PRINT_BAR
 
-// #define FILL_GAP_SNAPSHOT
-
 #if defined(PRINT_BAR) || defined(PRINT_SNAPSHOT)
 #include "misc/print.hpp"
 #endif
 
 TechnicalAnalysis::TechnicalAnalysis(size_t capacity)
-    : lob(&snapshot_delta_t_,
+    : lob(
+          &snapshot_year_,
+          &snapshot_month_,
+          &snapshot_day_,
+          &snapshot_hour_,
+          &snapshot_minute_,
+          &snapshot_second_,
+          &snapshot_delta_t_,
           &snapshot_prices_,
           &snapshot_volumes_,
+          &snapshot_turnovers_,
           &snapshot_vwaps_,
           &snapshot_directions_,
           &snapshot_spreads_,
-          &snapshot_mid_prices_) {
+          &snapshot_mid_prices_),
+      ResampleRunBar_(
+          &snapshot_day_,
+          &snapshot_delta_t_,
+          &snapshot_prices_,
+          &snapshot_volumes_,
+          &snapshot_turnovers_,
+          &snapshot_directions_,
+          &bar_delta_t_,
+          &bar_opens_,
+          &bar_highs_,
+          &bar_lows_,
+          &bar_closes_,
+          &bar_vwaps_) {
   // Reserve memory for efficient operation - reduce reallocations
-  continuous_snapshots_.reserve(capacity);
-  minute_bars_.reserve(15 * 250 * trade_hrs_in_a_day * 60); // 15 years of 1m bars
+  snapshots_.reserve(capacity);
+  bars.reserve(15 * 250 * trade_hrs_in_a_day * 3600 / RESAMPLE_BASE_PERIOD); // 15 years of resampled bars
 }
 
 TechnicalAnalysis::~TechnicalAnalysis() {
@@ -37,61 +57,43 @@ TechnicalAnalysis::~TechnicalAnalysis() {
 }
 
 void TechnicalAnalysis::AnalyzeSnapshot(const Table::Snapshot_Record &snapshot) {
-  UpdateMarketState(snapshot);
-  // std::cout << "market_state_: "
-  //           << static_cast<int>(market_state_) << " "
-  //           << static_cast<int>(snapshot.hour) << " "
-  //           << static_cast<int>(snapshot.minute) << " "
-  //           << static_cast<int>(snapshot.second) << " "
-  //           << static_cast<int>(is_session_start_) << " ";
-  if (market_state_ == 2) [[likely]] { // in market open
-    lob.update(&snapshot, is_session_start_);
-  }
+  lob.update(&snapshot, is_session_start_);
 
   // Debug output
 #ifdef PRINT_SNAPSHOT
   println(
-      static_cast<int>(snapshot.year),
-      static_cast<int>(snapshot.month),
-      static_cast<int>(snapshot.day),
-      static_cast<int>(snapshot.hour),
-      static_cast<int>(snapshot.minute),
-      static_cast<int>(snapshot.second),
-      snapshot.seconds_in_day,
-      snapshot.latest_price_tick,
-      snapshot.volume,
-      snapshot.direction);
+      static_cast<int>(snapshot_year_.back()),
+      static_cast<int>(snapshot_month_.back()),
+      static_cast<int>(snapshot_day_.back()),
+      static_cast<int>(snapshot_hour_.back()),
+      static_cast<int>(snapshot_minute_.back()),
+      static_cast<int>(snapshot_second_.back()),
+      static_cast<int>(snapshot_delta_t_.back()),
+      static_cast<float>(snapshot_prices_.back()),
+      static_cast<float>(snapshot_vwaps_.back()),
+      static_cast<float>(snapshot_mid_prices_.back()),
+      static_cast<float>(snapshot_volumes_.back()),
+      static_cast<int>(snapshot_directions_.back()),
+      static_cast<float>(snapshot_spreads_.back()));
 #endif
 }
 
-void TechnicalAnalysis::AnalyzeMinuteBar(const Table::Bar_1m_Record &bar) {
-  // Optimized VWAP calculation with branchless operation
-  const float vwap = (bar.volume > PRICE_EPSILON) ? (bar.turnover / bar.volume) : 0.0f;
-
-  // Batch update analysis buffers for better cache locality
-  const uint32_t timestamp = static_cast<uint32_t>(bar.hour) * 60 + bar.minute;
-  bar_timestamps_.push_back(timestamp);
-  bar_opens_.push_back(bar.open);
-  bar_highs_.push_back(bar.high);
-  bar_lows_.push_back(bar.low);
-  bar_closes_.push_back(bar.close);
-  bar_volumes_.push_back(bar.volume);
-  bar_vwaps_.push_back(vwap);
+void TechnicalAnalysis::AnalyzeRunBar(const Table::RunBar_Record &bar) {
 
 #ifdef PRINT_BAR
   println(
+      static_cast<int>(bar_delta_t_.back()),
       static_cast<int>(bar.year),
       static_cast<int>(bar.month),
       static_cast<int>(bar.day),
       static_cast<int>(bar.hour),
       static_cast<int>(bar.minute),
-      bar.open,
-      bar.high,
-      bar.low,
-      bar.close,
-      bar.volume,
-      bar.turnover,
-      vwap);
+      static_cast<int>(bar.second),
+      static_cast<float>(bar.open),
+      static_cast<float>(bar.high),
+      static_cast<float>(bar.low),
+      static_cast<float>(bar.close),
+      static_cast<float>(bar.vwap));
 #endif
 }
 
@@ -114,31 +116,41 @@ void TechnicalAnalysis::ProcessSingleSnapshot(const Table::Snapshot_Record &snap
   // Process the actual incoming snapshot
   ProcessSnapshotInternal(snapshot);
 
+#ifdef FILL_GAP_SNAPSHOT
   // Update state
   last_snapshot_ = snapshot;
   has_previous_snapshot_ = true;
   last_processed_time_ = snapshot.seconds_in_day;
+#endif
 }
 
 void TechnicalAnalysis::ProcessSnapshotInternal(const Table::Snapshot_Record &snapshot) {
+  UpdateMarketState(snapshot);
 
-  // 1. Store in continuous snapshots table - use emplace_back for efficiency
-  continuous_snapshots_.emplace_back(snapshot);
+  if (market_state_ == 2) [[likely]] { // in market open
 
-  // 2. Immediate snapshot analysis and buffer updates - optimized inline
-  AnalyzeSnapshot(snapshot);
+    // 1. Store in continuous snapshots table - use emplace_back for efficiency
+    snapshots_.emplace_back(snapshot);
 
-  // 3. Handle minute bar logic
-  if (IsNewMinuteBar(snapshot)) [[unlikely]] {
-    // Finalize current bar if exists and analyze it
-    if (has_current_bar_) [[likely]] {
-      FinalizeCurrentBar();
+    // 2. Immediate snapshot analysis and buffer updates - optimized inline
+    AnalyzeSnapshot(snapshot);
+
+    if (ResampleRunBar_.process()) {
+      resampled_bar_.year = snapshot.year;
+      resampled_bar_.month = snapshot.month;
+      resampled_bar_.day = snapshot.day;
+      resampled_bar_.hour = snapshot.hour;
+      resampled_bar_.minute = snapshot.minute;
+      resampled_bar_.second = snapshot.second;
+      resampled_bar_.open = bar_opens_.back();
+      resampled_bar_.high = bar_highs_.back();
+      resampled_bar_.low = bar_lows_.back();
+      resampled_bar_.close = bar_closes_.back();
+      resampled_bar_.vwap = bar_vwaps_.back();
+      bars.emplace_back(resampled_bar_);
+
+      AnalyzeRunBar(resampled_bar_);
     }
-    // Start new bar
-    StartNewBar(snapshot);
-  } else {
-    // Update current bar
-    UpdateCurrentBar(snapshot);
   }
 }
 
@@ -176,60 +188,8 @@ inline void TechnicalAnalysis::UpdateMarketState(const Table::Snapshot_Record &s
   market_state_ = new_state;
 }
 
-bool TechnicalAnalysis::IsNewMinuteBar(const Table::Snapshot_Record &snapshot) {
-  if (!has_current_bar_) [[unlikely]] {
-    return true; // First bar
-  }
-
-  // Check if minute changed
-  return (snapshot.hour != current_bar_.hour || snapshot.minute != current_bar_.minute);
-}
-
-void TechnicalAnalysis::FinalizeCurrentBar() {
-  // Add to minute bars table - use emplace_back for efficiency
-  minute_bars_.emplace_back(current_bar_);
-
-  // Immediate analysis
-  AnalyzeMinuteBar(current_bar_);
-}
-
-void TechnicalAnalysis::StartNewBar(const Table::Snapshot_Record &snapshot) {
-  current_bar_.year = snapshot.year;
-  current_bar_.month = snapshot.month;
-  current_bar_.day = snapshot.day;
-  current_bar_.hour = snapshot.hour;
-  current_bar_.minute = snapshot.minute;
-  current_bar_.open = snapshot.latest_price_tick;
-  current_bar_.high = snapshot.latest_price_tick;
-  current_bar_.low = snapshot.latest_price_tick;
-  current_bar_.close = snapshot.latest_price_tick;
-  current_bar_.volume = static_cast<float>(snapshot.volume * 100);
-  current_bar_.turnover = static_cast<float>(snapshot.turnover);
-
-  has_current_bar_ = true;
-}
-
-void TechnicalAnalysis::UpdateCurrentBar(const Table::Snapshot_Record &snapshot) {
-  if (!has_current_bar_) [[unlikely]] {
-    StartNewBar(snapshot);
-    return;
-  }
-
-  const float current_price = snapshot.latest_price_tick;
-
-  // Update OHLC with branchless min/max
-  current_bar_.high = (current_price > current_bar_.high) ? current_price : current_bar_.high;
-  current_bar_.low = (current_price < current_bar_.low) ? current_price : current_bar_.low;
-  current_bar_.close = current_price;
-
-  // Accumulate volume and turnover - reduce type conversions
-  const float volume_scaled = static_cast<float>(snapshot.volume * 100);
-  const float turnover_f = static_cast<float>(snapshot.turnover);
-  current_bar_.volume += volume_scaled;
-  current_bar_.turnover += turnover_f;
-}
+#ifdef FILL_GAP_SNAPSHOT
 void TechnicalAnalysis::GetGapSnapshot(uint32_t timestamp) {
-  // TODO
 
   // Preserve date and static price information from the last valid snapshot
   gap_snapshot_ = last_snapshot_;
@@ -245,6 +205,8 @@ void TechnicalAnalysis::GetGapSnapshot(uint32_t timestamp) {
   gap_snapshot_.volume = 0;
   gap_snapshot_.turnover = 0;
 }
+#endif
+
 // ============================================================================
 // CSV OUTPUT UTILITIES
 // ============================================================================
@@ -307,8 +269,8 @@ inline void DumpRecordsToCSV(const std::vector<RecordType> &records,
     file << "bid_vol_1,bid_vol_2,bid_vol_3,bid_vol_4,bid_vol_5,";
     file << "ask_price_1,ask_price_2,ask_price_3,ask_price_4,ask_price_5,";
     file << "ask_vol_1,ask_vol_2,ask_vol_3,ask_vol_4,ask_vol_5,direction\n";
-  } else if constexpr (std::is_same_v<RecordType, Table::Bar_1m_Record>) {
-    file << "year,month,day,hour,minute,open,high,low,close,volume,turnover\n";
+  } else if constexpr (std::is_same_v<RecordType, Table::RunBar_Record>) {
+    file << "year,month,day,hour,minute,second,open,high,low,close,vwap\n";
   }
 
   std::ostringstream batch_output;
@@ -335,20 +297,20 @@ inline void DumpRecordsToCSV(const std::vector<RecordType> &records,
       OutputArray(batch_output, r.ask_volumes, first);
       OutputField(batch_output, r.direction, first);
 
-    } else if constexpr (std::is_same_v<RecordType, Table::Bar_1m_Record>) {
-      auto [year, month, day, hour, minute, open, high, low, close, volume, turnover] = record;
+    } else if constexpr (std::is_same_v<RecordType, Table::RunBar_Record>) {
+      auto [year, month, day, hour, minute, second, open, high, low, close, vwap] = record;
 
       OutputField(batch_output, year, first);
       OutputField(batch_output, month, first);
       OutputField(batch_output, day, first);
       OutputField(batch_output, hour, first);
       OutputField(batch_output, minute, first);
+      OutputField(batch_output, second, first);
       OutputField(batch_output, open, first);
       OutputField(batch_output, high, first);
       OutputField(batch_output, low, first);
       OutputField(batch_output, close, first);
-      OutputField(batch_output, volume, first);
-      OutputField(batch_output, turnover, first);
+      OutputField(batch_output, vwap, first);
     }
 
     batch_output << "\n";
@@ -365,9 +327,9 @@ inline void DumpRecordsToCSV(const std::vector<RecordType> &records,
 
 // Public interface methods
 void TechnicalAnalysis::DumpSnapshotCSV(const std::string &asset_code, const std::string &output_dir, size_t last_n) const {
-  DumpRecordsToCSV(continuous_snapshots_, asset_code, output_dir, "snapshot_3s", last_n);
+  DumpRecordsToCSV(snapshots_, asset_code, output_dir, "snapshot_3s", last_n);
 }
 
 void TechnicalAnalysis::DumpBarCSV(const std::string &asset_code, const std::string &output_dir, size_t last_n) const {
-  DumpRecordsToCSV(minute_bars_, asset_code, output_dir, "bar_1m", last_n);
+  DumpRecordsToCSV(bars, asset_code, output_dir, "bar_resampled", last_n);
 }
