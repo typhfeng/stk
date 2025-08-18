@@ -42,7 +42,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(SOURCES
     src/json_config.cpp
     src/miniz.c
-    src/binary_parser.cpp
+    src/binary_parser_L1.cpp
     src/technical_analysis.cpp
     src/main.cpp
 )
@@ -60,51 +60,51 @@ set(HEADERS
     include/define/CBuffer.hpp
     include/json_config.hpp
     include/miniz.h
-    include/binary_parser.hpp
+    include/binary_parser_L1.hpp
     include/technical_analysis.hpp
 )
 
 # Create executable
-add_executable(binary_parser ${SOURCES} ${HEADERS})
+add_executable(binary_parser_L1 ${SOURCES} ${HEADERS})
 
 # Include directories
-target_include_directories(binary_parser PRIVATE 
+target_include_directories(binary_parser_L1 PRIVATE 
     src 
     include 
     
 )
 
 # Define MINIZ_EXPORTS for proper function export
-# target_compile_definitions(binary_parser PRIVATE MINIZ_EXPORTS)
+# target_compile_definitions(binary_parser_L1 PRIVATE MINIZ_EXPORTS)
 
 # Windows-specific settings
 if(WIN32)
     # For Windows, we might need additional libraries
-    target_link_libraries(binary_parser PRIVATE ws2_32)
+    target_link_libraries(binary_parser_L1 PRIVATE ws2_32)
     
     # Set subsystem to console
-    set_target_properties(binary_parser PROPERTIES
+    set_target_properties(binary_parser_L1 PROPERTIES
         WIN32_EXECUTABLE FALSE
     )
 endif()
 
 # Installation
-install(TARGETS binary_parser
+install(TARGETS binary_parser_L1
     RUNTIME DESTINATION bin
 )
 
 # Custom target for running with default parameters
 add_custom_target(run
-    COMMAND binary_parser
-    DEPENDS binary_parser
+    COMMAND binary_parser_L1
+    DEPENDS binary_parser_L1
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running binary parser with default parameters"
 )
 
 # Custom target for running with custom parameters
 add_custom_target(run_custom
-    COMMAND binary_parser "D:/data/A_stock/A_L1_binary" "parsed_output.csv"
-    DEPENDS binary_parser
+    COMMAND binary_parser_L1 "D:/data/A_stock/A_L1_binary" "parsed_output.csv"
+    DEPENDS binary_parser_L1
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running binary parser with custom parameters"
 )
