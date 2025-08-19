@@ -1,0 +1,84 @@
+本项目基于A股L2数据, 以单标的, 每天行情为数据储存单元, 总文件数在数千万级别(单目录文件数<10000, 否则影响性能)
+请使用告诉SSD作为数据储存:
+分区方法: GPT(不选MBR, APM)
+文件系统: XFS(不选NTFS, EXT4, Btrfs, F2FS)
+IO调度: Noop (不选Deadline, 不选CFQ)
+挂载参数: 特殊优化(这些参数是session only的,不改变存储数据和文件系统本身, 重载后失效)
+对于m.2的机器, 用fstab持久化挂载, 对于usb测试机器, 每次需要手动挂载
+记得每次用ssd前检察挂载状态, 不要把数据写到wsl的虚拟盘里
+lsblk -o NAME,MODEL,SIZE,ROTA,TRAN,FSTYPE,MOUNTPOINT
+
+#==================================================================================================
+# admin-powershell:
+Get-Disk | Format-Table Number, FriendlyName, SerialNumber, BusType, PartitionStyle, Size
+# Number FriendlyName             SerialNumber                             BusType PartitionStyle          Size
+# ------ ------------             ------------                             ------- --------------          ----
+#      0 WDC WDS100T2B0C-00PXH0   E823_8FA6_BF53_0001_001B_448B_48E3_33E0. NVMe    GPT            1000204886016
+#      1 Samsung SSD 9100 PRO 4TB 0000000000000000                         USB     GPT            4000787030016
+$disk_id = 
+wsl --shutdown
+# 裸盘透传（不让 Windows 挂载分区），这样进 WSL 里才能分区/格式化
+wsl --mount "\\.\PHYSICALDRIVE$disk_id" --bare
+
+#==================================================================================================
+# wsl2-ubuntu:
+# 1) 找到这块盘的设备名，一般是 /dev/sda 或 /dev/sdb
+lsblk -o NAME,MODEL,SIZE,ROTA,TRAN,FSTYPE,MOUNTPOINT
+# NAME   MODEL              SIZE ROTA TRAN FSTYPE MOUNTPOINT
+# sda    Virtual Disk     388.4M    1      ext4
+# sdb    Virtual Disk       186M    1      ext4
+# sdc    Virtual Disk         4G    1      swap   [SWAP]
+# sdd    Virtual Disk         1T    1      ext4   /mnt/wslg/distro
+# sde    SSD 9100 PRO 4TB   3.6T    0
+# └─sde1                    3.6T    0      xfs    /mnt/dev/sde
+
+# 定义设备变量
+DEV=/dev/sde
+
+# 2) 建 GPT 分区表（整盘）
+sudo parted $DEV --script mklabel gpt
+
+# 3) 建一个覆盖全盘的主分区（从 1MiB 对齐）
+sudo parted $DEV --script unit s print
+# Model: Samsung SSD 9100 PRO 4TB (scsi)
+# Disk $DEV: 7814037168s
+# Sector size (logical/physical): 512B/512B
+# Partition Table: gpt
+# Disk Flags:
+# Number  Start   End          Size         File system  Name     Flags
+#  1      65535s  7814000189s  7813934655s               primary
+
+# 分区名
+PART=${DEV}1
+
+# 4) 格式化 XFS，带高级调优 (sudo apt install xfsprogs)
+sudo mkfs.xfs -m bigtime=1 -n size=8192 -i size=512 -d agcount=256 $PART
+# meta-data=$PART              isize=512    agcount=256, agsize=3815398 blks
+#          =                       sectsz=512   attr=2, projid32bit=1
+#          =                       crc=1        finobt=1, sparse=1, rmapbt=1
+#          =                       reflink=1    bigtime=1 inobtcount=1 nrext64=0
+# data     =                       bsize=4096   blocks=976741831, imaxpct=5
+#          =                       sunit=0      swidth=0 blks
+# naming   =version 2              bsize=8192   ascii-ci=0, ftype=1
+# log      =internal log           bsize=4096   blocks=476924, version=2
+#          =                       sectsz=512   sunit=0 blks, lazy-count=1
+# realtime =none                   extsz=4096   blocks=0, rtextents=0
+
+# 5) 挂载试用
+sudo mkdir -p /mnt/$DEV
+sudo mount -o noatime,nodiratime,attr2,inode64,logbufs=8,logbsize=32k $PART /mnt/$DEV
+# noatime,nodiratime	避免每次访问更新时间戳，减少写 I/O
+# attr2	优化扩展属性存储
+# inode64	大盘随机分布 inode，减少 AG 内热点
+# logbufs=8	日志缓冲区数量，提高并发写入性能
+# logbsize=32k	日志块增大，减少日志写入频率
+
+# 6) 配置 I/O 调度器
+DEV_NAME=$(basename $DEV)
+echo none | sudo tee /sys/block/$DEV_NAME/queue/scheduler
+
+# 7) 验证
+mount | grep /mnt/$DEV
+df -h /mnt/$DEV
+xfs_info /mnt/$DEV | sed -n '1,25p'
+# 持久化挂载（fstab）对于USB用处不大, 不考虑
