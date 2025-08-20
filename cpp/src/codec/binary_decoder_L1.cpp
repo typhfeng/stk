@@ -1,4 +1,4 @@
-#include "codec/binary_parser_L1.hpp"
+#include "codec/binary_decoder_L1.hpp"
 #include "misc/misc.hpp"
 #include "technical_analysis.hpp"
 
@@ -21,7 +21,7 @@ extern "C" {
 #include "misc/misc.hpp"
 #endif
 
-namespace BinaryParser {
+namespace BinaryDecoder {
 
 // ============================================================================
 // FORWARD DECLARATIONS
@@ -33,13 +33,13 @@ namespace BinaryParser {
 // CONSTRUCTOR AND DESTRUCTOR
 // ============================================================================
 
-Parser::Parser() {
+Decoder::Decoder() {
   // Pre-allocate buffers for efficiency
   read_buffer_.reserve(BUFFER_SIZE);
   write_buffer_.resize(BUFFER_SIZE);
 }
 
-Parser::~Parser() {
+Decoder::~Decoder() {
   // Clean up completed
 }
 
@@ -47,7 +47,7 @@ Parser::~Parser() {
 // CORE PARSING FUNCTIONS
 // ============================================================================
 
-std::vector<uint8_t> Parser::DecompressFile(const std::string &filepath, size_t record_count) {
+std::vector<uint8_t> Decoder::DecompressFile(const std::string &filepath, size_t record_count) {
 #ifdef DEBUG_TIMER
   misc::Timer timer("DecompressFile");
 #endif
@@ -67,7 +67,7 @@ std::vector<uint8_t> Parser::DecompressFile(const std::string &filepath, size_t 
   file.close();
 
   // Use exact buffer size from record count for fast single decompression
-  mz_ulong exact_size = static_cast<mz_ulong>(record_count * sizeof(BinaryRecord));
+  mz_ulong exact_size = static_cast<mz_ulong>(record_count * sizeof(L1::BinaryRecord));
   std::vector<uint8_t> decompressed_data(static_cast<size_t>(exact_size));
 
   int result = mz_uncompress(decompressed_data.data(), &exact_size,
@@ -82,22 +82,22 @@ std::vector<uint8_t> Parser::DecompressFile(const std::string &filepath, size_t 
   return decompressed_data;
 }
 
-std::vector<BinaryRecord> Parser::ParseBinaryData(const std::vector<uint8_t> &binary_data) {
+std::vector<L1::BinaryRecord> Decoder::ParseBinaryData(const std::vector<uint8_t> &binary_data) {
 #ifdef DEBUG_TIMER
   misc::Timer timer("ParseBinaryData");
 #endif
-  size_t record_count = binary_data.size() / sizeof(BinaryRecord);
-  if (record_count == 0 || binary_data.size() % sizeof(BinaryRecord) != 0) {
+  size_t record_count = binary_data.size() / sizeof(L1::BinaryRecord);
+  if (record_count == 0 || binary_data.size() % sizeof(L1::BinaryRecord) != 0) {
     std::cerr << "Invalid binary data size: " << binary_data.size() << "\n";
     return {};
   }
 
-  std::vector<BinaryRecord> records(record_count);
+  std::vector<L1::BinaryRecord> records(record_count);
   std::memcpy(records.data(), binary_data.data(), binary_data.size());
   return records;
 }
 
-void Parser::ReverseDifferentialEncoding(std::vector<BinaryRecord> &records) {
+void Decoder::ReverseDifferentialEncoding(std::vector<L1::BinaryRecord> &records) {
 #ifdef DEBUG_TIMER
   misc::Timer timer("ReverseDifferentialEncoding");
 #endif
@@ -131,7 +131,7 @@ void Parser::ReverseDifferentialEncoding(std::vector<BinaryRecord> &records) {
 // DATA CONVERSION FUNCTIONS
 // ============================================================================
 
-void Parser::ProcessBinaryRecords(const std::vector<BinaryRecord> &binary_records, uint16_t year, uint8_t month) {
+void Decoder::ProcessBinaryRecords(const std::vector<L1::BinaryRecord> &binary_records, uint16_t year, uint8_t month) {
 #ifdef DEBUG_TIMER
   misc::Timer timer("ProcessBinaryRecords");
 #endif
@@ -174,18 +174,18 @@ void Parser::ProcessBinaryRecords(const std::vector<BinaryRecord> &binary_record
     snapshot.second = current_second;
     snapshot.seconds_in_day = record.time_s;
     // Convert price from tick to float
-    snapshot.latest_price_tick = TickToPrice(record.latest_price_tick);
+    snapshot.latest_price_tick = L1::TickToPrice(record.latest_price_tick);
     snapshot.trade_count = record.trade_count;
     snapshot.volume = record.volume;
     snapshot.turnover = record.turnover;
     // Convert bid prices and volumes
     for (int i = 0; i < 5; ++i) {
-      snapshot.bid_price_ticks[i] = TickToPrice(record.bid_price_ticks[i]);
+      snapshot.bid_price_ticks[i] = L1::TickToPrice(record.bid_price_ticks[i]);
       snapshot.bid_volumes[i] = record.bid_volumes[i];
     }
     // Convert ask prices and volumes
     for (int i = 0; i < 5; ++i) {
-      snapshot.ask_price_ticks[i] = TickToPrice(record.ask_price_ticks[i]);
+      snapshot.ask_price_ticks[i] = L1::TickToPrice(record.ask_price_ticks[i]);
       snapshot.ask_volumes[i] = record.ask_volumes[i];
     }
     snapshot.direction = record.direction;
@@ -199,8 +199,8 @@ void Parser::ProcessBinaryRecords(const std::vector<BinaryRecord> &binary_record
 // FILE SYSTEM UTILITIES
 // ============================================================================
 
-std::string Parser::FindAssetFile(const std::string &month_folder,
-                                  const std::string &asset_code) {
+std::string Decoder::FindAssetFile(const std::string &month_folder,
+                                   const std::string &asset_code) {
   try {
     for (const auto &entry : std::filesystem::directory_iterator(month_folder)) {
       if (entry.is_regular_file() && entry.path().extension() == ".bin") {
@@ -223,7 +223,7 @@ std::string Parser::FindAssetFile(const std::string &month_folder,
   return ""; // Not found
 }
 
-size_t Parser::ExtractRecordCountFromFilename(const std::string &filename) {
+size_t Decoder::ExtractRecordCountFromFilename(const std::string &filename) {
   // Extract record count from filename like "sh600000_12345.bin"
   if (filename.length() >= 10 && filename.substr(filename.length() - 4) == ".bin") {
     std::string basename = filename.substr(0, filename.length() - 4);
@@ -242,7 +242,7 @@ size_t Parser::ExtractRecordCountFromFilename(const std::string &filename) {
   return 0; // No record count found
 }
 
-std::tuple<size_t, uint16_t, uint8_t> Parser::ExtractRecordCountAndDateFromPath(const std::string &filepath) {
+std::tuple<size_t, uint16_t, uint8_t> Decoder::ExtractRecordCountAndDateFromPath(const std::string &filepath) {
 #ifdef DEBUG_TIMER
   misc::Timer timer("ExtractRecordCountAndDateFromPath");
 #endif
@@ -272,9 +272,9 @@ std::tuple<size_t, uint16_t, uint8_t> Parser::ExtractRecordCountAndDateFromPath(
   return {record_count, year, month};
 }
 
-size_t Parser::CalculateTotalRecordsForAsset(const std::string &asset_code,
-                                             const std::string &snapshot_dir,
-                                             const std::vector<std::string> &month_folders) {
+size_t Decoder::CalculateTotalRecordsForAsset(const std::string &asset_code,
+                                              const std::string &snapshot_dir,
+                                              const std::vector<std::string> &month_folders) {
   size_t total_records = 0;
 
   for (const std::string &month_folder : month_folders) {
@@ -296,10 +296,10 @@ size_t Parser::CalculateTotalRecordsForAsset(const std::string &asset_code,
 // MAIN INTERFACE
 // ============================================================================
 
-void Parser::ParseAsset(const std::string &asset_code,
-                        const std::string &snapshot_dir,
-                        const std::vector<std::string> &month_folders,
-                        const std::string &output_dir) {
+void Decoder::ParseAsset(const std::string &asset_code,
+                         const std::string &snapshot_dir,
+                         const std::vector<std::string> &month_folders,
+                         const std::string &output_dir) {
   auto start_time = std::chrono::high_resolution_clock::now();
 
   // Pre-calculate total records for progress tracking
@@ -357,4 +357,4 @@ void Parser::ParseAsset(const std::string &asset_code,
 
 // Note: CSV output utilities moved to technical_analysis.cpp
 
-} // namespace BinaryParser
+} // namespace BinaryDecoder

@@ -1,4 +1,4 @@
-#include "codec/binary_parser_L1.hpp"
+#include "codec/binary_decoder_L1.hpp"
 #include "json_config.hpp"
 #include "misc/affinity.hpp"
 #include <algorithm>
@@ -33,11 +33,11 @@ void ProcessAsset(const std::string &asset_code,
       month_folders.push_back(JsonConfig::FormatYearMonth(ym));
     }
 
-    // Create a parser instance for this asset (no output file needed for lifespan parsing)
-    BinaryParser::Parser parser;
+    // Create a decoder instance for this asset (no output file needed for lifespan parsing)
+    BinaryDecoder::Decoder decoder;
 
     // Process the asset across its entire lifespan
-    parser.ParseAsset(asset_code, snapshot_dir, month_folders, output_dir);
+    decoder.ParseAsset(asset_code, snapshot_dir, month_folders, output_dir);
 
   } catch (const std::exception &e) {
     std::cerr << "Error processing asset " << asset_code << ": " << e.what() << "\n";

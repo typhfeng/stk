@@ -1,61 +1,23 @@
 #pragma once
 
+#include "codec/L1_DataType.hpp"
 #include "technical_analysis.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
-namespace BinaryParser {
+namespace BinaryDecoder {
 
 // ============================================================================
-// DATA STRUCTURES AND CONSTANTS
+// MAIN DECODER CLASS
 // ============================================================================
 
-// Binary record structure (54 bytes total)
-#pragma pack(push, 1)
-struct BinaryRecord {
-  bool sync;                  // 1 byte
-  uint8_t day;                // 1 byte
-  uint16_t time_s;            // 2 bytes - seconds in day
-  int16_t latest_price_tick;  // 2 bytes - price * 100
-  uint8_t trade_count;        // 1 byte
-  uint32_t turnover;          // 4 bytes - RMB
-  uint16_t volume;            // 2 bytes - units of 100 shares
-  int16_t bid_price_ticks[5]; // 10 bytes - prices * 100
-  uint16_t bid_volumes[5];    // 10 bytes - units of 100 shares
-  int16_t ask_price_ticks[5]; // 10 bytes - prices * 100
-  uint16_t ask_volumes[5];    // 10 bytes - units of 100 shares
-  uint8_t direction;          // 1 byte
-                              // Total: 54 bytes
-};
-#pragma pack(pop)
-
-// Differential encoding configuration
-constexpr bool DIFF_FIELDS[] = {
-    false, // sync
-    true,  // day
-    true,  // time_s
-    true,  // latest_price_tick
-    false, // trade_count
-    false, // turnover
-    false, // volume
-    true,  // bid_price_ticks (array)
-    false, // bid_volumes
-    true,  // ask_price_ticks (array)
-    false, // ask_volumes
-    false  // direction
-};
-
-// ============================================================================
-// MAIN PARSER CLASS
-// ============================================================================
-
-class Parser {
+class Decoder {
 public:
   // Constructor and destructor
-  Parser();
-  ~Parser();
+  Decoder();
+  ~Decoder();
 
   // Main public interface
   void ParseAsset(const std::string &asset_code,
@@ -70,14 +32,14 @@ private:
 
   // File I/O and decompression
   std::vector<uint8_t> DecompressFile(const std::string &filepath, size_t record_count);
-  std::vector<BinaryRecord> ParseBinaryData(const std::vector<uint8_t> &binary_data);
-  void ReverseDifferentialEncoding(std::vector<BinaryRecord> &records);
+  std::vector<L1::BinaryRecord> ParseBinaryData(const std::vector<uint8_t> &binary_data);
+  void ReverseDifferentialEncoding(std::vector<L1::BinaryRecord> &records);
 
   // ========================================================================
   // DATA CONVERSION FUNCTIONS
   // ========================================================================
 
-  void ProcessBinaryRecords(const std::vector<BinaryRecord> &binary_records, uint16_t year, uint8_t month);
+  void ProcessBinaryRecords(const std::vector<L1::BinaryRecord> &binary_records, uint16_t year, uint8_t month);
 
   // ========================================================================
   // FILE SYSTEM UTILITIES
@@ -97,7 +59,7 @@ private:
   // FORMATTING UTILITIES
   // ========================================================================
 
-  inline float TickToPrice(int16_t tick) const { return static_cast<float>(tick * 0.01); }
+  // Use L1::TickToPrice from L1_DataType.hpp
 
   // ========================================================================
   // MEMBER VARIABLES
@@ -118,4 +80,4 @@ private:
   std::unique_ptr<::TechnicalAnalysis> technical_analysis_;
 };
 
-} // namespace BinaryParser
+} // namespace BinaryDecoder

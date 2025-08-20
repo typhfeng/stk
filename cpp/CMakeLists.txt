@@ -47,7 +47,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(SOURCES
     src/json_config.cpp
     src/package/miniz/miniz.c
-    src/codec/binary_parser_L1.cpp
+    src/codec/binary_decoder_L1.cpp
     src/technical_analysis.cpp
     src/main.cpp
 )
@@ -76,7 +76,7 @@ set(HEADERS
     include/define/CBuffer.hpp
     include/json_config.hpp
     include/package/miniz/miniz.h
-    include/codec/binary_parser_L1.hpp
+    include/codec/binary_decoder_L1.hpp
     include/technical_analysis.hpp
 )
 
