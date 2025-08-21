@@ -4,6 +4,7 @@ import glob
 import subprocess
 from config.cfg_stk import cfg_stk
 
+
 def kill_python_processes_windows(current_pid):
     """Kill all running Python processes in Windows, except this script."""
     print("Terminating Windows Python processes...")
@@ -16,6 +17,7 @@ def kill_python_processes_windows(current_pid):
         print(f"Error while killing processes: {e}")
     except Exception as ex:
         print(f"An unexpected error occurred: {ex}")
+
 
 def kill_python_processes_unix(current_pid):
     """Kill all running Python processes in Unix-like systems, except this script."""
@@ -30,6 +32,7 @@ def kill_python_processes_unix(current_pid):
     except Exception as ex:
         print(f"An unexpected error occurred: {ex}")
 
+
 def remove_old_files():
     """Remove old result files."""
     print("Removing old results...")
@@ -37,7 +40,6 @@ def remove_old_files():
         for file in glob.glob(ext):
             os.remove(file)
             print(f"Removed {file}")
-
 
 
 def main():
@@ -55,26 +57,28 @@ def main():
     # Remove old files
     remove_old_files()
 
-    # Start main.py with viztracer
-    print("Starting main.py...")
+    # app_name = "main"
+    # app_name = "L1_database"
+    app_name = "L2_database"
+    app = f"./py/{app_name}.py"
     
-    main = f"./py/main.py"
-    # main = f"./strategies/Strategy_Fund/main.py"
-    
+    print(f"Starting {app_name}...")
+
     # Use the virtual environment Python interpreter
-    venv_python = "/home/chuyin/work/py3_12_3/bin/python"
-    
+    python = "/home/chuyin/work/py3_12_3/bin/python"
+
     try:
         if cfg_stk.profile:
-            subprocess.run([venv_python, "-m", "viztracer", "--tracer_entries", "1000000", main], check=True)
+            subprocess.run([python, "-m", "viztracer", "--tracer_entries", "1000000", main], check=True)
         else:
-            subprocess.run([venv_python, main], check=True)
-        print("main.py finished")
+            subprocess.run([python, app], check=True)
+        print("app finished")
         if cfg_stk.profile:
             subprocess.run(["vizviewer", "result.json"], check=True)
     except subprocess.CalledProcessError:
-        print("Error: Failed to start main.py")
+        print("Error: Failed to start app")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

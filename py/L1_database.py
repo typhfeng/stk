@@ -11,8 +11,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), TOP))
 sys.path.append(os.path.join(os.path.dirname(__file__), "app"))
 
 
-def run_encode():
-    cpp_dir = os.path.join(os.path.dirname(__file__), TOP, "cpp")
+def run_L1_database():
+    cpp_dir = os.path.join(os.path.dirname(__file__), TOP, "cpp/projects/L1_database")
 
     print("Triggering C++ build script...")
     result = subprocess.run(
@@ -28,4 +28,4 @@ def run_encode():
 
 
 if __name__ == '__main__':
-    run_encode()
+    run_L1_database()
