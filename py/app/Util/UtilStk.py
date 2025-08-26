@@ -162,7 +162,7 @@ def _wt_asset_file(path: str) -> Dict:
         },
         "pre_disclosure": {
             "name": "预披露",
-            "description": "该状态表示公司计划上市，并已就其意图进行初步披露，通常是在首次公开募股（IPO）之前。"
+            "description": "该状态表示公司计划上市，并已就其意图进行初步披露，通常是在首次公开募股（IPO)之前。"
         },
         "unauthorized": {
             "name": "未过会",
@@ -178,7 +178,7 @@ def _wt_asset_file(path: str) -> Dict:
         },
         "ipo_suspension": {
             "name": "暂缓发行",
-            "description": "意味着公司的首次公开募股（IPO）计划已被暂时暂停，可能由于监管问题或市场状况。"
+            "description": "意味着公司的首次公开募股（IPO)计划已被暂时暂停，可能由于监管问题或市场状况。"
         },
         "ipo_listing_suspension": {
             "name": "暂缓上市",

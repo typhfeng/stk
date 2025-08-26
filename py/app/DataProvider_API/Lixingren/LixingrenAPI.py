@@ -66,12 +66,12 @@ class LixingrenAPI:
 
         # Fundamental models:
         set1 = [
-            'pe_ttm',       # P/E Ratio TTM: 股票市盈率（过去12个月），衡量当前股价与过去12个月盈利的比例
+            'pe_ttm',       # P/E Ratio TTM: 股票市盈率（过去12个月)，衡量当前股价与过去12个月盈利的比例
             'd_pe_ttm',     # Adjusted P/E TTM: 扣除非经常性项目后的市盈率，反映公司正常盈利能力
             'pb',           # P/B Ratio: 市净率，比较股票市场价格与公司账面价值的关系
             'pb_wo_gw',     # P/B excluding Goodwill: 不含商誉的市净率，更准确反映公司有形资产价值
-            'ps_ttm',       # P/S Ratio TTM: 市销率（过去12个月），衡量市值与年销售额的比率
-            'pcf_ttm',      # P/CF Ratio TTM: 市现率（过去12个月），比较市值与实际现金流量的关系
+            'ps_ttm',       # P/S Ratio TTM: 市销率（过去12个月)，衡量市值与年销售额的比率
+            'pcf_ttm',      # P/CF Ratio TTM: 市现率（过去12个月)，比较市值与实际现金流量的关系
             'dyr',          # Dividend Yield: 股息率，表示股息收益占当前股价的比例
             'sp',           # Stock Price: 股价，即当前市场上股票的交易价格
             'spc',          # Stock Price Change: 股票价格变化百分比，反映价格的涨跌幅度

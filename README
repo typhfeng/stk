@@ -17,7 +17,7 @@ Get-Disk | Format-Table Number, FriendlyName, SerialNumber, BusType, PartitionSt
 #      1 Samsung SSD 9100 PRO 4TB 0000000000000000                         USB     GPT            4000787030016
 $disk_id = 
 wsl --shutdown
-# 裸盘透传（不让 Windows 挂载分区），这样进 WSL 里才能分区/格式化
+# 裸盘透传（不让 Windows 挂载分区)，这样进 WSL 里才能分区/格式化
 wsl --mount "\\.\PHYSICALDRIVE$disk_id" --bare
 
 #==================================================================================================
@@ -35,10 +35,10 @@ lsblk -o NAME,MODEL,SIZE,ROTA,TRAN,FSTYPE,MOUNTPOINT
 # 定义设备变量
 DEV=/dev/sde
 
-# 2) 建 GPT 分区表（整盘）
+# 2) 建 GPT 分区表（整盘)
 sudo parted $DEV --script mklabel gpt
 
-# 3) 建一个覆盖全盘的主分区（从 1MiB 对齐）
+# 3) 建一个覆盖全盘的主分区（从 1MiB 对齐)
 sudo parted $DEV --script unit s print
 # Model: Samsung SSD 9100 PRO 4TB (scsi)
 # Disk $DEV: 7814037168s
@@ -81,7 +81,7 @@ echo none | sudo tee /sys/block/$DEV_NAME/queue/scheduler
 mount | grep /mnt/$DEV
 df -h /mnt/$DEV
 xfs_info /mnt/$DEV | sed -n '1,25p'
-# 持久化挂载（fstab）对于USB用处不大, 不考虑
+# 持久化挂载（fstab)对于USB用处不大, 不考虑
 
 misc:
 rsync -av --progress --info=progress2 /source/folder/ /destination/folder/
