@@ -4,7 +4,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <memory>
 
 namespace L2 {
 
@@ -531,31 +533,27 @@ bool BinaryEncoder_L2::encode_snapshots(const std::vector<Snapshot>& snapshots,
     }
   }
   
-  // Write binary data to file
-  std::ofstream file(filepath, std::ios::binary);
-  if (!file.is_open()) [[unlikely]] {
-    std::cerr << "L2 Encoder: Failed to open snapshot output file: " << filepath << std::endl;
+  // Prepare data for compression: count + snapshots
+  size_t header_size = sizeof(count);
+  size_t snapshots_size = delta_snapshots.size() * sizeof(Snapshot);
+  size_t total_size = header_size + snapshots_size;
+  
+  auto data_buffer = std::make_unique<char[]>(total_size);
+  char* write_ptr = data_buffer.get();
+  
+  // Copy count to buffer
+  std::memcpy(write_ptr, &count, header_size);
+  write_ptr += header_size;
+  
+  // Copy snapshots to buffer
+  std::memcpy(write_ptr, delta_snapshots.data(), snapshots_size);
+  
+  // Compress and write data
+  if (!compress_and_write_data(filepath, data_buffer.get(), total_size)) {
     return false;
   }
   
-  // Write simple header: count
-  file.write(reinterpret_cast<const char*>(&count), sizeof(count));
-  
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Encoder: Failed to write header: " << filepath << std::endl;
-    return false;
-  }
-  
-  // Write snapshots directly
-  file.write(reinterpret_cast<const char*>(delta_snapshots.data()), 
-             delta_snapshots.size() * sizeof(Snapshot));
-  
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Encoder: Failed to write snapshot data: " << filepath << std::endl;
-    return false;
-  }
-  
-  std::cout << "L2 Encoder: Successfully wrote " << count << " snapshots to " << filepath << std::endl;
+  std::cout << "L2 Encoder: Successfully compressed and wrote " << count << " snapshots to " << filepath << std::endl;
   
   return true;
 }
@@ -615,31 +613,27 @@ bool BinaryEncoder_L2::encode_orders(const std::vector<Order>& orders,
     }
   }
   
-  // Write binary data to file
-  std::ofstream file(filepath, std::ios::binary);
-  if (!file.is_open()) [[unlikely]] {
-    std::cerr << "L2 Encoder: Failed to open order output file: " << filepath << std::endl;
+  // Prepare data for compression: count + orders
+  size_t header_size = sizeof(count);
+  size_t orders_size = delta_orders.size() * sizeof(Order);
+  size_t total_size = header_size + orders_size;
+  
+  auto data_buffer = std::make_unique<char[]>(total_size);
+  char* write_ptr = data_buffer.get();
+  
+  // Copy count to buffer
+  std::memcpy(write_ptr, &count, header_size);
+  write_ptr += header_size;
+  
+  // Copy orders to buffer
+  std::memcpy(write_ptr, delta_orders.data(), orders_size);
+  
+  // Compress and write data
+  if (!compress_and_write_data(filepath, data_buffer.get(), total_size)) {
     return false;
   }
   
-  // Write simple header: count
-  file.write(reinterpret_cast<const char*>(&count), sizeof(count));
-  
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Encoder: Failed to write header: " << filepath << std::endl;
-    return false;
-  }
-  
-  // Write orders directly
-  file.write(reinterpret_cast<const char*>(delta_orders.data()), 
-             delta_orders.size() * sizeof(Order));
-  
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Encoder: Failed to write order data: " << filepath << std::endl;
-    return false;
-  }
-  
-  std::cout << "L2 Encoder: Successfully wrote " << count << " orders to " << filepath << std::endl;
+  std::cout << "L2 Encoder: Successfully compressed and wrote " << count << " orders to " << filepath << std::endl;
   
   return true;
 }
@@ -735,6 +729,59 @@ bool BinaryEncoder_L2::process_stock_data(const std::string& stock_dir,
     }
   }
   
+  return true;
+}
+
+// Zstandard compression helper functions
+size_t BinaryEncoder_L2::calculate_compression_bound(size_t data_size) {
+  return ZSTD_compressBound(data_size);
+}
+
+bool BinaryEncoder_L2::compress_and_write_data(const std::string& filepath, const void* data, size_t data_size) {
+  std::ofstream file(filepath, std::ios::binary);
+  if (!file.is_open()) [[unlikely]] {
+    std::cerr << "L2 Encoder: Failed to open file for compression: " << filepath << std::endl;
+    return false;
+  }
+
+  // Calculate compression bound and allocate buffer
+  size_t compressed_bound = calculate_compression_bound(data_size);
+  auto compressed_buffer = std::make_unique<char[]>(compressed_bound);
+
+  // Standard Zstandard compression
+  size_t compressed_size = ZSTD_compress(
+    compressed_buffer.get(), compressed_bound,
+    data, data_size,
+    ZSTD_COMPRESSION_LEVEL
+  );
+
+  if (ZSTD_isError(compressed_size)) [[unlikely]] {
+    std::cerr << "L2 Encoder: Compression failed: " << ZSTD_getErrorName(compressed_size) << std::endl;
+    return false;
+  }
+
+  // Write header: original size and compressed size
+  file.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
+  file.write(reinterpret_cast<const char*>(&compressed_size), sizeof(compressed_size));
+  
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Encoder: Failed to write compression header: " << filepath << std::endl;
+    return false;
+  }
+
+  // Write compressed data
+  file.write(compressed_buffer.get(), compressed_size);
+  
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Encoder: Failed to write compressed data: " << filepath << std::endl;
+    return false;
+  }
+
+  // Print compression statistics
+  double compression_ratio = static_cast<double>(data_size) / static_cast<double>(compressed_size);
+  std::cout << "L2 Encoder: Compressed " << data_size << " bytes to " << compressed_size 
+            << " bytes (ratio: " << std::fixed << std::setprecision(2) << compression_ratio << "x)" << std::endl;
+
   return true;
 }
 

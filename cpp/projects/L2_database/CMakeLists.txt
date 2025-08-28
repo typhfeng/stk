@@ -31,6 +31,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 # Include directories
 include_directories(../../include)
+include_directories(../../package/zstd-1.5.7)
+
+# Zstandard library path
+set(ZSTD_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../../package/zstd-1.5.7/libzstd.a)
 
 # Source files for L2_database
 set(L2_DATABASE_SOURCES
@@ -49,7 +53,13 @@ set(L2_DATABASE_HEADERS
 add_executable(app_L2_database ${L2_DATABASE_SOURCES} ${L2_DATABASE_HEADERS})
 
 # Target include directories
-target_include_directories(app_L2_database PRIVATE ../../include)
+target_include_directories(app_L2_database PRIVATE 
+    ../../include
+    ../../package/zstd-1.5.7
+)
+
+# Link Zstandard library
+target_link_libraries(app_L2_database PRIVATE ${ZSTD_LIB_PATH})
 
 # Windows-specific settings
 if(WIN32)

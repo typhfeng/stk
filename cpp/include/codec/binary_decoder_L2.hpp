@@ -5,6 +5,9 @@
 #include <string>
 #include <vector>
 
+// Zstandard compression library  
+#include "../../package/zstd-1.5.7/zstd.h"
+
 namespace L2 {
 
 // Inline constexpr functions to calculate column widths from bit widths
@@ -60,6 +63,9 @@ public:
   // decoder functions
   bool decode_snapshots(const std::string &filepath, std::vector<Snapshot> &snapshots, bool use_delta = ENABLE_DELTA_ENCODING);
   bool decode_orders(const std::string &filepath, std::vector<Order> &orders, bool use_delta = ENABLE_DELTA_ENCODING);
+  
+  // Zstandard decompression helper functions (pure standard decompression)
+  static bool read_and_decompress_data(const std::string& filepath, void* data, size_t expected_size, size_t& actual_size);
 
   // Print snapshot in human-readable format
   static void print_snapshot(const Snapshot &snapshot, size_t index = 0);
@@ -85,6 +91,9 @@ public:
   // Convert volume from internal format to readable format (hot path - inlined)
   static inline uint32_t volume_to_shares(uint16_t volume_100shares);
 
+  // Helper function to extract count from filename (used by dictionary compression)
+  static size_t extract_count_from_filename(const std::string &filepath);
+
 private:
   // Reusable vector tables for delta decoding (snapshots)
   mutable std::vector<uint8_t> temp_hours, temp_minutes, temp_seconds;
@@ -97,9 +106,6 @@ private:
   mutable std::vector<uint8_t> temp_order_hours, temp_order_minutes, temp_order_seconds, temp_order_milliseconds;
   mutable std::vector<uint16_t> temp_order_prices;
   mutable std::vector<uint32_t> temp_bid_order_ids, temp_ask_order_ids;
-
-  // Helper function to extract count from filename
-  static size_t extract_count_from_filename(const std::string &filepath);
 
   static const char *order_type_to_string(uint8_t order_type);
   static const char *order_dir_to_string(uint8_t order_dir);

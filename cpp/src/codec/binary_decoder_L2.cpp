@@ -1,9 +1,11 @@
 #include "codec/binary_decoder_L2.hpp"
 #include "codec/delta_encoding.hpp"
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <regex>
 
 namespace L2 {
@@ -265,31 +267,41 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
 
 // decoder functions
 bool BinaryDecoder_L2::decode_snapshots(const std::string& filepath, std::vector<Snapshot>& snapshots, bool use_delta) {
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to open snapshot file: " << filepath << std::endl;
+  // First extract count from filename to estimate required size
+  size_t estimated_count = extract_count_from_filename(filepath);
+  if (estimated_count == 0) {
+    std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
     return false;
   }
   
-  // Read simple header: count
+  // Calculate expected decompressed size
+  size_t header_size = sizeof(size_t);  // size_t count
+  size_t snapshots_size = estimated_count * sizeof(Snapshot);
+  size_t expected_size = header_size + snapshots_size;
+  
+  // Allocate buffer for decompressed data
+  auto data_buffer = std::make_unique<char[]>(expected_size);
+  
+  // Read and decompress data
+  size_t actual_size;
+  if (!read_and_decompress_data(filepath, data_buffer.get(), expected_size, actual_size)) {
+    return false;
+  }
+  
+  // Extract count from decompressed data
   size_t count;
-  file.read(reinterpret_cast<char*>(&count), sizeof(count));
+  std::memcpy(&count, data_buffer.get(), header_size);
   
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read header: " << filepath << std::endl;
+  // Verify count matches filename
+  if (count != estimated_count) {
+    std::cerr << "L2 Decoder: Count mismatch - filename says " << estimated_count 
+              << " but data says " << count << std::endl;
     return false;
   }
   
-  // Pre-allocate exact size for optimal memory usage
+  // Extract snapshots from decompressed data
   snapshots.resize(count);
-  
-  // Read snapshots directly
-  file.read(reinterpret_cast<char*>(snapshots.data()), count * sizeof(Snapshot));
-  
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read snapshot data: " << filepath << std::endl;
-    return false;
-  }
+  std::memcpy(snapshots.data(), data_buffer.get() + header_size, snapshots_size);
   
   // Decode deltas (reverse the delta encoding process)
   if (use_delta && count > 1) {
@@ -373,31 +385,41 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string& filepath, std::vector
 }
 
 bool BinaryDecoder_L2::decode_orders(const std::string& filepath, std::vector<Order>& orders, bool use_delta) {
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to open order file: " << filepath << std::endl;
+  // First extract count from filename to estimate required size
+  size_t estimated_count = extract_count_from_filename(filepath);
+  if (estimated_count == 0) {
+    std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
     return false;
   }
   
-  // Read simple header: count
+  // Calculate expected decompressed size
+  size_t header_size = sizeof(size_t);  // size_t count
+  size_t orders_size = estimated_count * sizeof(Order);
+  size_t expected_size = header_size + orders_size;
+  
+  // Allocate buffer for decompressed data
+  auto data_buffer = std::make_unique<char[]>(expected_size);
+  
+  // Read and decompress data
+  size_t actual_size;
+  if (!read_and_decompress_data(filepath, data_buffer.get(), expected_size, actual_size)) {
+    return false;
+  }
+  
+  // Extract count from decompressed data
   size_t count;
-  file.read(reinterpret_cast<char*>(&count), sizeof(count));
+  std::memcpy(&count, data_buffer.get(), header_size);
   
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read header: " << filepath << std::endl;
+  // Verify count matches filename
+  if (count != estimated_count) {
+    std::cerr << "L2 Decoder: Count mismatch - filename says " << estimated_count 
+              << " but data says " << count << std::endl;
     return false;
   }
   
-  // Pre-allocate exact size for optimal memory usage
+  // Extract orders from decompressed data
   orders.resize(count);
-  
-  // Read orders directly
-  file.read(reinterpret_cast<char*>(orders.data()), count * sizeof(Order));
-  
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read order data: " << filepath << std::endl;
-    return false;
-  }
+  std::memcpy(orders.data(), data_buffer.get() + header_size, orders_size);
   
   // Decode deltas (reverse the delta encoding process)
   if (use_delta && count > 1) {
@@ -445,6 +467,67 @@ bool BinaryDecoder_L2::decode_orders(const std::string& filepath, std::vector<Or
   
   std::cout << "L2 Decoder: Successfully decoded " << orders.size() << " orders from " << filepath << std::endl;
   
+  return true;
+}
+
+// Zstandard decompression helper function (pure standard decompression)
+bool BinaryDecoder_L2::read_and_decompress_data(const std::string& filepath, void* data, size_t expected_size, size_t& actual_size) {
+  std::ifstream file(filepath, std::ios::binary);
+  if (!file.is_open()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to open file for decompression: " << filepath << std::endl;
+    return false;
+  }
+
+  // Read header: original size and compressed size
+  size_t original_size, compressed_size;
+  file.read(reinterpret_cast<char*>(&original_size), sizeof(original_size));
+  file.read(reinterpret_cast<char*>(&compressed_size), sizeof(compressed_size));
+  
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
+    return false;
+  }
+
+  // Verify expected size matches
+  if (original_size != expected_size) [[unlikely]] {
+    std::cerr << "L2 Decoder: Size mismatch - expected " << expected_size 
+              << " but header says " << original_size << std::endl;
+    return false;
+  }
+
+  // Read compressed data
+  auto compressed_buffer = std::make_unique<char[]>(compressed_size);
+  file.read(compressed_buffer.get(), compressed_size);
+  
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
+    return false;
+  }
+
+  // Standard Zstandard decompression
+  size_t decompressed_size = ZSTD_decompress(
+    data, expected_size,
+    compressed_buffer.get(), compressed_size
+  );
+
+  if (ZSTD_isError(decompressed_size)) [[unlikely]] {
+    std::cerr << "L2 Decoder: Decompression failed: " << ZSTD_getErrorName(decompressed_size) << std::endl;
+    return false;
+  }
+
+  if (decompressed_size != expected_size) [[unlikely]] {
+    std::cerr << "L2 Decoder: Decompressed size mismatch - expected " << expected_size 
+              << " but got " << decompressed_size << std::endl;
+    return false;
+  }
+
+  actual_size = decompressed_size;
+  
+  // Print decompression statistics
+  double compression_ratio = static_cast<double>(original_size) / static_cast<double>(compressed_size);
+  std::cout << "L2 Decoder: Decompressed " << compressed_size << " bytes to " << original_size 
+            << " bytes (ratio: " << std::fixed << std::setprecision(2) << compression_ratio << "x)" << std::endl;
+
   return true;
 }
 

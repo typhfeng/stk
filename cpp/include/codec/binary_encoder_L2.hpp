@@ -6,7 +6,27 @@
 #include <cassert>
 #include <cstdint>
 
+// Zstandard compression library
+#include "../../package/zstd-1.5.7/zstd.h"
+
 namespace L2 {
+
+// Zstandard compression configuration - optimized for offline encoding + online decoding
+// Scenario: Millions of small files (1KB-100KB), prioritize compression ratio for storage efficiency
+// Online decoding needs extremely fast decompression (zstd excels at fast decompression regardless of compression level)
+// 
+// Compression level trade-offs for small files:
+// Level 1:  Fast encoding (510 MB/s), ratio 2.896x, decompression 1550 MB/s
+// Level 3:  Good encoding/ratio balance, better for small files, decompression still ~1400+ MB/s  
+// Level 6:  Better ratio for storage, acceptable encoding time offline, decompression ~1300+ MB/s
+// Level 9:  High compression ratio, slower encoding (offline OK), decompression ~1200+ MB/s
+//
+// For millions of small files, higher compression level saves significant storage
+inline constexpr int ZSTD_COMPRESSION_LEVEL = 6;  // Balanced for offline encoding + excellent decompression
+inline constexpr size_t ZSTD_COMPRESSION_BOUND_FACTOR = 2; // Conservative bound factor for worst-case compressed size
+
+// 1. create normal compressed library
+// 2. use dictionary training of Zstd to create smaller compressed library
 
 // Intermediate CSV data structures for parsing
 struct CSVSnapshot {
@@ -91,6 +111,10 @@ public:
                          const std::string& filepath, bool use_delta = true);
     bool encode_orders(const std::vector<Order>& orders,
                       const std::string& filepath, bool use_delta = true);
+    
+    // Zstandard compression helper functions (pure standard compression)
+    static bool compress_and_write_data(const std::string& filepath, const void* data, size_t data_size);
+    static size_t calculate_compression_bound(size_t data_size);
     
     // High-level processing functions
     bool process_stock_data(const std::string& stock_dir,
