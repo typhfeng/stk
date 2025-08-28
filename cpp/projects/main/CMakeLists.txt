@@ -29,12 +29,12 @@ if(MSVC)
     set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG /OPT:REF /OPT:ICF")
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # GCC flags with LTO
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -Wextra -march=native -flto")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -march=native -flto")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG -ffast-math")
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Clang flags with modern LTO using lld linker
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -Wextra -march=native -flto")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG -ffinite-math-only")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -march=native -flto")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG -ffast-math")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld")
 endif()
 
@@ -46,26 +46,16 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Source files
 set(SOURCES
     ../../src/codec/json_config.cpp
-    ../../src/package/miniz/miniz.c
     ../../src/codec/binary_decoder_L1.cpp
     ../../src/technical_analysis.cpp
     ../../src/main.cpp
 )
 
 # code specific settings ==========================================================================
-# Set C language for miniz.c and suppress external library warnings
-set_source_files_properties(../../src/package/miniz/miniz.c PROPERTIES LANGUAGE C)
-if(MSVC)
-    set_source_files_properties(../../src/package/miniz/miniz.c PROPERTIES COMPILE_FLAGS "/wd4132 /wd4127")
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set_source_files_properties(../../src/package/miniz/miniz.c PROPERTIES COMPILE_FLAGS "-Wno-#pragma-messages")
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set_source_files_properties(../../src/package/miniz/miniz.c PROPERTIES COMPILE_FLAGS "-Wno-pragma-messages")
-endif()
 
-# Disable -ffinite-math-only for JSON-related files to avoid nlohmann/json warnings
+# Disable -ffast-math for JSON-related files to avoid nlohmann/json warnings
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set_source_files_properties(../../src/codec/json_config.cpp PROPERTIES COMPILE_FLAGS "-fno-finite-math-only")
+    set_source_files_properties(../../src/codec/json_config.cpp PROPERTIES COMPILE_FLAGS "-fno-fast-math")
 endif()
 # =================================================================================================
 
@@ -75,7 +65,6 @@ set(HEADERS
     ../../include/misc/affinity.hpp
     ../../include/define/CBuffer.hpp
     ../../include/codec/json_config.hpp
-    ../../include/package/miniz/miniz.h
     ../../include/codec/binary_decoder_L1.hpp
     ../../include/technical_analysis.hpp
 )
@@ -87,7 +76,6 @@ add_executable(app_main ${SOURCES} ${HEADERS})
 target_include_directories(app_main PRIVATE
     ../../src
     ../../include
-    ../../include/package/miniz
     ../../include/package/nlohmann
 )
 

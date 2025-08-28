@@ -4,9 +4,7 @@
 #include <cstring>
 #include <iostream>
 
-extern "C" {
-#include "package/miniz/miniz.h"
-}
+
 
 namespace BinaryEncoder_L1 {
 
@@ -43,8 +41,8 @@ std::vector<uint8_t> Encoder::EncodeMonthSnapshots(const std::vector<L1::Snapsho
   std::vector<uint8_t> raw_bytes(total_size);
   std::memcpy(raw_bytes.data(), encoded_records.data(), total_size);
 
-  // Compress the data
-  return CompressData(raw_bytes);
+  // Return raw data directly (no compression)
+  return raw_bytes;
 }
 
 void Encoder::ApplyDifferentialEncoding(std::vector<L1::Snapshot> &records) {
@@ -79,28 +77,6 @@ void Encoder::ApplyDifferentialEncoding(std::vector<L1::Snapshot> &records) {
   }
 }
 
-std::vector<uint8_t> Encoder::CompressData(const std::vector<uint8_t> &raw_data) {
-  if (raw_data.empty()) {
-    return {};
-  }
 
-  // Estimate compressed size (worst case: slightly larger than input)
-  mz_ulong compressed_size = mz_compressBound(static_cast<mz_ulong>(raw_data.size()));
-  std::vector<uint8_t> compressed_data(compressed_size);
-
-  // Compress with level 6 (optimal for tick data according to Python implementation)
-  int result = mz_compress2(compressed_data.data(), &compressed_size,
-                            raw_data.data(), static_cast<mz_ulong>(raw_data.size()),
-                            6); // compression level 6
-
-  if (result != MZ_OK) {
-    std::cerr << "Compression failed with error code: " << result << "\n";
-    return {};
-  }
-
-  // Resize to actual compressed size
-  compressed_data.resize(compressed_size);
-  return compressed_data;
-}
 
 } // namespace BinaryEncoder

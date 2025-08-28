@@ -26,9 +26,6 @@ private:
 
     // Differential encoding
     void ApplyDifferentialEncoding(std::vector<L1::Snapshot>& records);
-    
-    // Compression
-    std::vector<uint8_t> CompressData(const std::vector<uint8_t>& raw_data);
 
     // ========================================================================
     // UTILITY FUNCTIONS

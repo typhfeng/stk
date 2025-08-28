@@ -30,8 +30,8 @@ private:
   // CORE PARSING FUNCTIONS
   // ========================================================================
 
-  // File I/O and decompression
-  std::vector<uint8_t> DecompressFile(const std::string &filepath, size_t record_count);
+  // File I/O
+  std::vector<uint8_t> ReadRawFile(const std::string &filepath, size_t /* record_count */);
   std::vector<L1::Snapshot> ParseBinaryData(const std::vector<uint8_t> &binary_data);
   void ReverseDifferentialEncoding(std::vector<L1::Snapshot> &records);
 

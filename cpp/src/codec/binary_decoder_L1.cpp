@@ -10,9 +10,7 @@
 #include <iostream>
 #include <vector>
 
-extern "C" {
-#include "package/miniz/miniz.h"
-}
+
 
 // #define DEBUG_TIMER
 // #define PRINT_BINARY
@@ -47,9 +45,9 @@ Decoder::~Decoder() {
 // CORE PARSING FUNCTIONS
 // ============================================================================
 
-std::vector<uint8_t> Decoder::DecompressFile(const std::string &filepath, size_t record_count) {
+std::vector<uint8_t> Decoder::ReadRawFile(const std::string &filepath, size_t /* record_count */) {
 #ifdef DEBUG_TIMER
-  misc::Timer timer("DecompressFile");
+  misc::Timer timer("ReadRawFile");
 #endif
   std::ifstream file(filepath, std::ios::binary);
   if (!file) {
@@ -57,29 +55,16 @@ std::vector<uint8_t> Decoder::DecompressFile(const std::string &filepath, size_t
     return {};
   }
 
-  // Read compressed data
+  // Read raw data
   file.seekg(0, std::ios::end);
-  size_t compressed_size = file.tellg();
+  size_t file_size = file.tellg();
   file.seekg(0, std::ios::beg);
 
-  std::vector<uint8_t> compressed_data(compressed_size);
-  file.read(reinterpret_cast<char *>(compressed_data.data()), compressed_size);
+  std::vector<uint8_t> raw_data(file_size);
+  file.read(reinterpret_cast<char *>(raw_data.data()), file_size);
   file.close();
 
-  // Use exact buffer size from record count for fast single decompression
-  mz_ulong exact_size = static_cast<mz_ulong>(record_count * sizeof(L1::Snapshot));
-  std::vector<uint8_t> decompressed_data(static_cast<size_t>(exact_size));
-
-  int result = mz_uncompress(decompressed_data.data(), &exact_size,
-                             compressed_data.data(),
-                             static_cast<mz_ulong>(compressed_size));
-
-  if (result != MZ_OK) {
-    std::cerr << "Decompression failed for file: " << filepath << "\n";
-    return {};
-  }
-  decompressed_data.resize(exact_size);
-  return decompressed_data;
+  return raw_data;
 }
 
 std::vector<L1::Snapshot> Decoder::ParseBinaryData(const std::vector<uint8_t> &binary_data) {
@@ -325,14 +310,14 @@ void Decoder::ParseAsset(const std::string &asset_code,
     auto [record_count, year, month] = ExtractRecordCountAndDateFromPath(asset_file);
 
     try {
-      // Decompress and parse binary data
-      auto decompressed_data = DecompressFile(asset_file, record_count);
-      if (decompressed_data.empty()) {
+      // Read and parse binary data
+      auto raw_data = ReadRawFile(asset_file, record_count);
+      if (raw_data.empty()) {
         std::cout << "  Warning: Empty file " << asset_file << "\n";
         continue;
       }
 
-      auto records = ParseBinaryData(decompressed_data);
+      auto records = ParseBinaryData(raw_data);
       ReverseDifferentialEncoding(records);
 
       // Process binary records through technical analysis
