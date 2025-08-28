@@ -66,13 +66,13 @@ struct CSVTrade {
 
 class BinaryEncoder_L2 {
 public:
-    // CSV parsing functions
+    // CSV parsing functions (hot path functions inlined)
     static std::vector<std::string> split_csv_line(const std::string& line);
     static uint32_t parse_time_to_ms(uint32_t time_int);
-    static uint32_t parse_price_to_fen(const std::string& price_str);
-    static uint32_t parse_vwap_price(const std::string& price_str);  // For VWAP prices with 0.001 RMB precision
-    static uint32_t parse_volume_to_100shares(const std::string& volume_str);  // Convert shares to 100-share units
-    static uint64_t parse_turnover_to_fen(const std::string& turnover_str);
+    static inline uint32_t parse_price_to_fen(const std::string& price_str);
+    static inline uint32_t parse_vwap_price(const std::string& price_str);  // For VWAP prices with 0.001 RMB precision
+    static inline uint32_t parse_volume_to_100shares(const std::string& volume_str);  // Convert shares to 100-share units
+    static inline uint64_t parse_turnover_to_fen(const std::string& turnover_str);
     
     static bool parse_snapshot_csv(const std::string& filepath, std::vector<CSVSnapshot>& snapshots);
     static bool parse_order_csv(const std::string& filepath, std::vector<CSVOrder>& orders);
@@ -95,16 +95,18 @@ public:
                                   const std::string& stock_code);
 
 private:
-    static uint8_t time_to_hour(uint32_t time_ms);
-    static uint8_t time_to_minute(uint32_t time_ms);
-    static uint8_t time_to_second(uint32_t time_ms);
-    static uint8_t time_to_millisecond_10ms(uint32_t time_ms);
+    // Time conversion functions (inlined for performance)
+    static inline uint8_t time_to_hour(uint32_t time_ms);
+    static inline uint8_t time_to_minute(uint32_t time_ms);
+    static inline uint8_t time_to_second(uint32_t time_ms);
+    static inline uint8_t time_to_millisecond_10ms(uint32_t time_ms);
     
-    // Market detection
-    static bool is_szse_market(const std::string& stock_code);
+    // Market detection (inlined for performance)
+    static inline bool is_szse_market(const std::string& stock_code);
     
-    static uint8_t determine_order_type(char csv_order_type, char csv_trade_code, bool is_trade, bool is_szse);
-    static bool determine_order_direction(char side_flag);
+    // Order processing (inlined for performance)
+    static inline uint8_t determine_order_type(char csv_order_type, char csv_trade_code, bool is_trade, bool is_szse);
+    static inline bool determine_order_direction(char side_flag);
 };
 
 } // namespace L2

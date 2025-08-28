@@ -27,8 +27,8 @@ inline constexpr int calc_width(uint8_t bit_width) {
 
 // Helper function to get column bit width
 inline constexpr int get_column_width(std::string_view column_name) {
-    constexpr size_t schema_size = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
-    return calc_width(SchemaUtils::get_column_bitwidth(Snapshot_Schema, schema_size, column_name));
+  constexpr size_t schema_size = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
+  return calc_width(SchemaUtils::get_column_bitwidth(Snapshot_Schema, schema_size, column_name));
 }
 
 // Snapshot field widths - using schema names
@@ -54,13 +54,10 @@ inline constexpr int millisecond_width() { return get_column_width("millisecond"
 
 class BinaryDecoder_L2 {
 public:
-  // Decode snapshots from binary file
-  static bool decode_snapshots_from_binary(const std::string &filepath,
-                                           std::vector<Snapshot> &snapshots);
 
-  // Decode orders from binary file
-  static bool decode_orders_from_binary(const std::string &filepath,
-                                        std::vector<Order> &orders);
+  // decoder functions that extract count from filename
+  static bool decode_snapshots_from_binary(const std::string &filepath, std::vector<Snapshot> &snapshots);
+  static bool decode_orders_from_binary(const std::string &filepath, std::vector<Order> &orders);
 
   // Print snapshot in human-readable format
   static void print_snapshot(const Snapshot &snapshot, size_t index = 0);
@@ -77,16 +74,19 @@ public:
   // Convert time components back to readable format
   static std::string time_to_string(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond_10ms = 0);
 
-  // Convert price from internal format to readable format
-  static double price_to_rmb(uint16_t price_ticks);
+  // Convert price from internal format to readable format (hot path - inlined)
+  static inline double price_to_rmb(uint16_t price_ticks);
 
   // Convert VWAP price from internal format to readable format (0.001 RMB units)
-  static double vwap_to_rmb(uint16_t vwap_ticks);
+  static inline double vwap_to_rmb(uint16_t vwap_ticks);
 
-  // Convert volume from internal format to readable format
-  static uint32_t volume_to_shares(uint16_t volume_100shares);
+  // Convert volume from internal format to readable format (hot path - inlined)
+  static inline uint32_t volume_to_shares(uint16_t volume_100shares);
 
 private:
+  // Helper function to extract count from filename
+  static size_t extract_count_from_filename(const std::string &filepath);
+
   static const char *order_type_to_string(uint8_t order_type);
   static const char *order_dir_to_string(uint8_t order_dir);
 };

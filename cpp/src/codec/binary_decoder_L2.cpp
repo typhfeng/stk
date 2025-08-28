@@ -1,75 +1,105 @@
 #include "codec/binary_decoder_L2.hpp"
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <regex>
 
 namespace L2 {
 
-bool BinaryDecoder_L2::decode_snapshots_from_binary(const std::string &filepath,
-                                                    std::vector<Snapshot> &snapshots) {
+size_t BinaryDecoder_L2::extract_count_from_filename(const std::string &filepath) {
+  // Extract count from filename pattern: *_snapshots_<count>.bin or *_orders_<count>.bin
+  std::filesystem::path file_path(filepath);
+  std::string filename = file_path.stem().string(); // Get filename without extension
+
+  // Look for pattern _<number> at the end
+  std::regex count_regex(R"(_(\d+)$)");
+  std::smatch match;
+
+  if (std::regex_search(filename, match, count_regex)) {
+    return std::stoull(match[1].str());
+  }
+
+  return 0; // Return 0 if count cannot be extracted
+}
+
+bool BinaryDecoder_L2::decode_snapshots_from_binary(const std::string &filepath, std::vector<Snapshot> &snapshots) {
+  // Try to extract count from filename for optimal pre-allocation
+  size_t expected_count = extract_count_from_filename(filepath);
+
   std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open()) {
-    std::cerr << "Failed to open binary file: " << filepath << std::endl;
+  if (!file.is_open()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to open snapshot file: " << filepath << std::endl;
     return false;
   }
 
   // Read header: number of snapshots
   size_t count;
   file.read(reinterpret_cast<char *>(&count), sizeof(count));
-  if (file.fail()) {
-    std::cerr << "Failed to read snapshot count from " << filepath << std::endl;
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to read snapshot header: " << filepath << std::endl;
     return false;
   }
 
-  snapshots.reserve(count);
-
-  // Read all snapshots
-  for (size_t i = 0; i < count; i++) {
-    Snapshot snapshot;
-    file.read(reinterpret_cast<char *>(&snapshot), sizeof(snapshot));
-    if (file.fail()) {
-      std::cerr << "Failed to read snapshot " << i << " from " << filepath << std::endl;
-      return false;
-    }
-    snapshots.push_back(snapshot);
+  // If filename count doesn't match, fall back to standard behavior
+  if (expected_count != 0 && expected_count != count) {
+    expected_count = count;
   }
 
-  file.close();
-  std::cout << "Successfully decoded " << count << " snapshots from " << filepath << std::endl;
+  // Pre-allocate exact size for optimal memory usage
+  snapshots.clear();
+  snapshots.resize(count);
+
+  // Batch read all snapshots at once for maximum efficiency
+  if (count > 0) {
+    file.read(reinterpret_cast<char *>(snapshots.data()), count * sizeof(Snapshot));
+    if (file.fail()) [[unlikely]] {
+      std::cerr << "L2 Decoder: Failed to read snapshot data: " << filepath << std::endl;
+      snapshots.clear();
+      return false;
+    }
+  }
+
   return true;
 }
 
-bool BinaryDecoder_L2::decode_orders_from_binary(const std::string &filepath,
-                                                 std::vector<Order> &orders) {
+bool BinaryDecoder_L2::decode_orders_from_binary(const std::string &filepath, std::vector<Order> &orders) {
+  // Try to extract count from filename for optimal pre-allocation
+  size_t expected_count = extract_count_from_filename(filepath);
+
   std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open()) {
-    std::cerr << "Failed to open binary file: " << filepath << std::endl;
+  if (!file.is_open()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to open order file: " << filepath << std::endl;
     return false;
   }
 
   // Read header: number of orders
   size_t count;
   file.read(reinterpret_cast<char *>(&count), sizeof(count));
-  if (file.fail()) {
-    std::cerr << "Failed to read order count from " << filepath << std::endl;
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to read order header: " << filepath << std::endl;
     return false;
   }
 
-  orders.reserve(count);
-
-  // Read all orders
-  for (size_t i = 0; i < count; i++) {
-    Order order;
-    file.read(reinterpret_cast<char *>(&order), sizeof(order));
-    if (file.fail()) {
-      std::cerr << "Failed to read order " << i << " from " << filepath << std::endl;
-      return false;
-    }
-    orders.push_back(order);
+  // If filename count doesn't match, fall back to standard behavior
+  if (expected_count != 0 && expected_count != count) {
+    expected_count = count;
   }
 
-  file.close();
-  std::cout << "Successfully decoded " << count << " orders from " << filepath << std::endl;
+  // Pre-allocate exact size for optimal memory usage
+  orders.clear();
+  orders.resize(count);
+
+  // Batch read all orders at once for maximum efficiency
+  if (count > 0) {
+    file.read(reinterpret_cast<char *>(orders.data()), count * sizeof(Order));
+    if (file.fail()) [[unlikely]] {
+      std::cerr << "L2 Decoder: Failed to read order data: " << filepath << std::endl;
+      orders.clear();
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -86,15 +116,15 @@ std::string BinaryDecoder_L2::time_to_string(uint8_t hour, uint8_t minute, uint8
   return oss.str();
 }
 
-double BinaryDecoder_L2::price_to_rmb(uint16_t price_ticks) {
+inline double BinaryDecoder_L2::price_to_rmb(uint16_t price_ticks) {
   return static_cast<double>(price_ticks) * 0.01; // Convert from 0.01 RMB units to RMB
 }
 
-double BinaryDecoder_L2::vwap_to_rmb(uint16_t vwap_ticks) {
+inline double BinaryDecoder_L2::vwap_to_rmb(uint16_t vwap_ticks) {
   return static_cast<double>(vwap_ticks) * 0.001; // Convert from 0.001 RMB units to RMB
 }
 
-uint32_t BinaryDecoder_L2::volume_to_shares(uint16_t volume_100shares) {
+inline uint32_t BinaryDecoder_L2::volume_to_shares(uint16_t volume_100shares) {
   return static_cast<uint32_t>(volume_100shares) * 100;
 }
 
