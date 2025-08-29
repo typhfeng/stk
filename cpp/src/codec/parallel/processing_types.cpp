@@ -65,18 +65,12 @@ MultiBufferState::~MultiBufferState() {
 }
 
 std::string MultiBufferState::get_available_decomp_dir() {
-    // Wait for a directory to be free
-    while (true) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!available_buffers_.empty()) {
-                size_t index = *available_buffers_.begin();
-                available_buffers_.erase(index);
-                return buffer_dirs_[index];
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [this] { return !available_buffers_.empty(); });
+    
+    size_t index = *available_buffers_.begin();
+    available_buffers_.erase(index);
+    return buffer_dirs_[index];
 }
 
 void MultiBufferState::signal_ready(const std::string& dir) {
@@ -85,9 +79,6 @@ void MultiBufferState::signal_ready(const std::string& dir) {
         std::lock_guard<std::mutex> lock(mutex_);
         ready_buffers_.insert(index);
         cv_.notify_all();
-    } else if (g_config.terminate_on_error) {
-        std::cerr << "FATAL ERROR: Invalid buffer directory in signal_ready: " << dir << std::endl;
-        std::exit(1);
     }
 }
 
@@ -114,9 +105,6 @@ void MultiBufferState::finish_with_dir(const std::string& dir) {
         in_use_buffers_.erase(index);
         available_buffers_.insert(index);
         cv_.notify_all();
-    } else if (g_config.terminate_on_error) {
-        std::cerr << "FATAL ERROR: Invalid buffer directory in finish_with_dir: " << dir << std::endl;
-        std::exit(1);
     }
 }
 

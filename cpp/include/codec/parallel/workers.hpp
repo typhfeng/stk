@@ -1,7 +1,6 @@
 #pragma once
 
 #include "processing_types.hpp"
-#include "processing_config.hpp"
 #include <string>
 #include <vector>
 #include <atomic>
@@ -67,6 +66,8 @@ void decompression_worker(const std::vector<std::string>& archive_subset,
  * @return true if decompression succeeded
  */
 bool decompress_7z(const std::string& archive_path, const std::string& output_dir);
+
+
 
 } // namespace Parallel
 } // namespace L2
