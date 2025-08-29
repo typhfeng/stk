@@ -21,7 +21,7 @@ int main() {
   // Use configured decompression threads, all remaining cores for encoding
   unsigned int encoding_threads = num_cores - g_config.decompression_threads;
 
-  assert(g_config.decompression_threads > 0 && encoding_threads > 0 && g_config.decompression_buffers > g_config.decompression_threads);
+  assert(g_config.decompression_threads > 0 && encoding_threads > 0);
 
   std::cout << "L2 Processing" << (g_config.skip_decompression ? " (Debug mode)" : "") 
             << ": " << g_config.decompression_threads
@@ -35,79 +35,69 @@ int main() {
     std::filesystem::remove_all(g_config.temp_base);
   }
 
-  // Setup directories and buffers
+  // Setup directories and simple buffer state
   std::filesystem::create_directories(g_config.temp_base);
   std::filesystem::create_directories(g_config.output_base);
-  MultiBufferState multi_buffer(g_config.temp_base, g_config.decompression_buffers);
+  BufferState buffer_state(g_config.temp_base);
 
-  // Fast archive discovery with glob pattern (skip in debug mode)
+  // Fast archive discovery 
   std::vector<std::string> all_archives;
-  if (!g_config.skip_decompression) {
-    std::filesystem::recursive_directory_iterator dir_iter(g_config.input_base);
-    for (const auto &entry : dir_iter) {
-      if (entry.is_regular_file() && entry.path().extension() == ".7z") {
-        all_archives.push_back(entry.path().string());
-      }
+  std::filesystem::recursive_directory_iterator dir_iter(g_config.input_base);
+  for (const auto &entry : dir_iter) {
+    if (entry.is_regular_file() && entry.path().extension() == ".7z") {
+      all_archives.push_back(entry.path().string());
     }
-    std::sort(all_archives.begin(), all_archives.end());
-    std::cout << "Processing " << all_archives.size() << " archives" << std::endl;
-  } else {
-    // In debug mode, create dummy archive entries to maintain worker structure
-    all_archives.push_back(""); // Empty entry for debug mode
-    std::cout << "Debug mode: Processing existing temp data" << std::endl;
+  }
+  std::sort(all_archives.begin(), all_archives.end());
+  std::cout << "Processing " << all_archives.size() << " archives" << std::endl;
+
+  // Add all archives to buffer state
+  for (const auto& archive : all_archives) {
+    buffer_state.add_archive(archive);
   }
 
-  // Initialize simple work coordination
+  // Initialize work coordination
   TaskQueue task_queue;
   std::atomic<int> completed_tasks{0};
   std::atomic<int> total_assets{0};
-
-  // Round-robin archive distribution
-  std::vector<std::vector<std::string>> archive_subsets(g_config.decompression_threads);
-  for (size_t i = 0; i < all_archives.size(); ++i) {
-    archive_subsets[i % g_config.decompression_threads].push_back(all_archives[i]);
-  }
 
   // Launch all workers
   std::vector<std::thread> all_workers;
 
   // Decompression workers
   for (unsigned int i = 0; i < g_config.decompression_threads; ++i) {
-    if (!archive_subsets[i].empty()) {
-      all_workers.emplace_back(decompression_worker,
-                               std::cref(archive_subsets[i]),
-                               std::ref(multi_buffer),
-                               std::ref(task_queue),
-                               std::string(g_config.output_base),
-                               std::ref(total_assets),
-                               i);
-    }
+    all_workers.emplace_back(decompression_worker,
+                             std::ref(buffer_state),
+                             std::ref(task_queue),
+                             std::string(g_config.output_base),
+                             std::ref(total_assets),
+                             i);
   }
 
   // Encoding workers
-  for (unsigned int i = 1; i <= encoding_threads; ++i) {
-    all_workers.emplace_back(encoding_worker_with_multibuffer,
+  for (unsigned int i = 0; i < encoding_threads; ++i) {
+    unsigned int core_id = g_config.decompression_threads + i;
+    all_workers.emplace_back(encoding_worker,
                              std::ref(task_queue),
-                             std::ref(multi_buffer),
-                             i,
+                             std::ref(buffer_state),
+                             core_id,
                              std::ref(completed_tasks));
   }
 
-  // Wait for decompression to finish, then signal completion
+  // Wait for decompression threads to finish
   for (unsigned int i = 0; i < g_config.decompression_threads; ++i) {
-    if (i < all_workers.size()) {
-      all_workers[i].join();
-    }
+    all_workers[i].join();
   }
-  multi_buffer.signal_decompression_finished();
+  buffer_state.signal_decompression_finished();
   task_queue.finish();
 
-  // Wait for remaining encoding workers
+  // Wait for encoding workers
   for (unsigned int i = g_config.decompression_threads; i < all_workers.size(); ++i) {
     all_workers[i].join();
   }
 
-  std::cout << "Complete: " << completed_tasks.load() << "/" << total_assets.load()
-            << " assets processed" << std::endl;
+  std::cout << "Processing complete: " << completed_tasks.load() << "/" << total_assets.load()
+            << " assets processed across all dates" << std::endl;
+  
   return 0;
 }

@@ -1,10 +1,7 @@
 #include "codec/parallel/processing_types.hpp"
 #include "codec/parallel/processing_config.hpp"
-#include <chrono>
-#include <thread>
 #include <filesystem>
 #include <cstdlib>
-#include <iostream>
 
 namespace L2 {
 namespace Parallel {
@@ -42,84 +39,68 @@ size_t TaskQueue::size() const {
     return tasks_.size();
 }
 
-// MultiBufferState implementation
-MultiBufferState::MultiBufferState(const std::string& temp_base, uint32_t num_buffers) {
-    buffer_dirs_.reserve(num_buffers);
-    
-    // Create buffer directories
-    for (uint32_t i = 0; i < num_buffers; ++i) {
-        std::string buffer_dir = temp_base + "/buffer_" + std::to_string(i);
-        buffer_dirs_.push_back(buffer_dir);
-        available_buffers_.insert(i);
-        std::filesystem::create_directories(buffer_dir);
+// BufferState implementation
+BufferState::BufferState(const std::string& temp_base) 
+    : temp_base_(temp_base) {
+    std::filesystem::create_directories(temp_base_);
+}
+
+BufferState::~BufferState() {
+    if (std::filesystem::exists(temp_base_)) {
+        std::filesystem::remove_all(temp_base_);
     }
 }
 
-MultiBufferState::~MultiBufferState() {
-    // Clean up buffer directories
-    for (const auto& dir : buffer_dirs_) {
-        if (std::filesystem::exists(dir)) {
-            std::filesystem::remove_all(dir);
-        }
-    }
+void BufferState::add_archive(const std::string& archive_path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    archives_.push(archive_path);
+    cv_.notify_all();
 }
 
-std::string MultiBufferState::get_available_decomp_dir() {
-    std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait(lock, [this] { return !available_buffers_.empty(); });
-    
-    size_t index = *available_buffers_.begin();
-    available_buffers_.erase(index);
-    return buffer_dirs_[index];
-}
-
-void MultiBufferState::signal_ready(const std::string& dir) {
-    size_t index = find_buffer_index(dir);
-    if (index < buffer_dirs_.size()) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        ready_buffers_.insert(index);
-        cv_.notify_all();
-    }
-}
-
-std::string MultiBufferState::wait_for_ready_dir() {
+bool BufferState::get_next_archive(std::string& archive_path) {
     std::unique_lock<std::mutex> lock(mutex_);
     cv_.wait(lock, [this] { 
-        return !ready_buffers_.empty() || decompression_finished_.load(); 
+        return !archives_.empty() || decompression_finished_.load(); 
     });
     
-    if (!ready_buffers_.empty()) {
-        size_t index = *ready_buffers_.begin();
-        ready_buffers_.erase(index);
-        in_use_buffers_.insert(index);
-        return buffer_dirs_[index];
+    if (archives_.empty()) {
+        return false;
     }
     
-    return "";  // Decompression finished and no more work
+    archive_path = archives_.front();
+    archives_.pop();
+    return true;
 }
 
-void MultiBufferState::finish_with_dir(const std::string& dir) {
-    size_t index = find_buffer_index(dir);
-    if (index < buffer_dirs_.size()) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        in_use_buffers_.erase(index);
-        available_buffers_.insert(index);
-        cv_.notify_all();
+void BufferState::signal_folder_ready(const std::string& date_folder) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ready_folders_.push(date_folder);
+    cv_.notify_all();
+}
+
+std::string BufferState::get_ready_folder() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [this] { 
+        return !ready_folders_.empty() || decompression_finished_.load(); 
+    });
+    
+    if (ready_folders_.empty()) {
+        return "";
     }
+    
+    std::string date_folder = ready_folders_.front();
+    ready_folders_.pop();
+    return date_folder;
 }
 
-void MultiBufferState::signal_decompression_finished() {
+void BufferState::signal_decompression_finished() {
     decompression_finished_.store(true);
     cv_.notify_all();
 }
 
-size_t MultiBufferState::find_buffer_index(const std::string& dir) const {
-    for (size_t i = 0; i < buffer_dirs_.size(); ++i) {
-        if (buffer_dirs_[i] == dir) {
-            return i;
-        }
-    }
-    return buffer_dirs_.size(); // Invalid index
+std::string BufferState::get_date_folder(const std::string& archive_path) const {
+    std::string archive_name = std::filesystem::path(archive_path).stem().string();
+    return temp_base_ + "/" + archive_name;
 }
 
 } // namespace Parallel

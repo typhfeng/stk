@@ -9,7 +9,6 @@
 #include <memory>
 #include <sstream>
 #include <locale>
-#include <codecvt>
 
 namespace L2 {
 
@@ -479,7 +478,7 @@ bool BinaryEncoder_L2::encode_snapshots(const std::vector<Snapshot>& snapshots,
   size_t count = delta_snapshots.size();
   
   if (use_delta && count > 1) {
-    std::cout << "L2 Encoder: Applying delta encoding to " << count << " snapshots..." << std::endl;
+    // std::cout << "L2 Encoder: Applying delta encoding to " << count << " snapshots..." << std::endl;
     // Apply delta encoding to columns marked with use_delta=true in schema
     // Reuse pre-allocated member vectors for better performance
     temp_hours.resize(count);
@@ -574,7 +573,11 @@ bool BinaryEncoder_L2::encode_snapshots(const std::vector<Snapshot>& snapshots,
     return false;
   }
   
-  std::cout << "L2 Encoder: Successfully compressed and wrote " << count << " snapshots to " << filepath << std::endl;
+  // Progress is now shown via print_progress_with_message in workers.cpp
+  // std::cout << "L2 Encoder: Compressed " << compression_stats.original_size << " bytes to " 
+  //           << compression_stats.compressed_size << " bytes (ratio: " << std::fixed 
+  //           << std::setprecision(2) << compression_stats.ratio << "x), wrote " << count 
+  //           << " snapshots to " << filepath << std::endl;
   
   return true;
 }
@@ -591,7 +594,7 @@ bool BinaryEncoder_L2::encode_orders(const std::vector<Order>& orders,
   size_t count = delta_orders.size();
   
   if (use_delta && count > 1) {
-    std::cout << "L2 Encoder: Applying delta encoding to " << count << " orders..." << std::endl;
+    // std::cout << "L2 Encoder: Applying delta encoding to " << count << " orders..." << std::endl;
     // Apply delta encoding to columns marked with use_delta=true in schema
     // Reuse pre-allocated member vectors for better performance
     temp_order_hours.resize(count);
@@ -654,7 +657,11 @@ bool BinaryEncoder_L2::encode_orders(const std::vector<Order>& orders,
     return false;
   }
   
-  std::cout << "L2 Encoder: Successfully compressed and wrote " << count << " orders to " << filepath << std::endl;
+  // Progress is now shown via print_progress_with_message in workers.cpp  
+  // std::cout << "L2 Encoder: Compressed " << compression_stats.original_size << " bytes to " 
+  //           << compression_stats.compressed_size << " bytes (ratio: " << std::fixed 
+  //           << std::setprecision(2) << compression_stats.ratio << "x), wrote " << count 
+  //           << " orders to " << filepath << std::endl;
   
   return true;
 }
@@ -798,10 +805,10 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string& filepath, cons
     return false;
   }
 
-  // Print compression statistics
-  double compression_ratio = static_cast<double>(data_size) / static_cast<double>(compressed_size);
-  std::cout << "L2 Encoder: Compressed " << data_size << " bytes to " << compressed_size 
-            << " bytes (ratio: " << std::fixed << std::setprecision(2) << compression_ratio << "x)" << std::endl;
+  // Store compression statistics for later reporting
+  compression_stats.original_size = data_size;
+  compression_stats.compressed_size = compressed_size;
+  compression_stats.ratio = static_cast<double>(data_size) / static_cast<double>(compressed_size);
 
   return true;
 }

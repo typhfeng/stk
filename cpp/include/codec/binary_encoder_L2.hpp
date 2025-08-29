@@ -84,6 +84,13 @@ struct CSVTrade {
     uint64_t bid_order_id;
 };
 
+// Compression statistics
+struct CompressionStats {
+    size_t original_size = 0;
+    size_t compressed_size = 0;
+    double ratio = 0.0;
+};
+
 class BinaryEncoder_L2 {
 public:
     // Constructor with optional capacity hints for better memory allocation
@@ -113,7 +120,7 @@ public:
                       const std::string& filepath, bool use_delta = true);
     
     // Zstandard compression helper functions (pure standard compression)
-    static bool compress_and_write_data(const std::string& filepath, const void* data, size_t data_size);
+    bool compress_and_write_data(const std::string& filepath, const void* data, size_t data_size);
     static size_t calculate_compression_bound(size_t data_size);
     
     // High-level processing functions
@@ -122,6 +129,9 @@ public:
                            const std::string& stock_code,
                            std::vector<Snapshot>* out_snapshots = nullptr,
                            std::vector<Order>* out_orders = nullptr);
+    
+    // Get compression statistics
+    const CompressionStats& get_compression_stats() const { return compression_stats; }
 
 private:
     // Reusable vector tables for delta encoding (snapshots)
@@ -135,6 +145,9 @@ private:
     mutable std::vector<uint8_t> temp_order_hours, temp_order_minutes, temp_order_seconds, temp_order_milliseconds;
     mutable std::vector<uint16_t> temp_order_prices;
     mutable std::vector<uint32_t> temp_bid_order_ids, temp_ask_order_ids;
+    
+    // Compression statistics
+    mutable CompressionStats compression_stats;
     
     // Time conversion functions (inlined for performance)
     static inline uint8_t time_to_hour(uint32_t time_ms);

@@ -5,8 +5,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-#include <vector>
-#include <unordered_set>
 
 namespace L2 {
 namespace Parallel {
@@ -39,46 +37,28 @@ public:
 };
 
 /**
- * Multi-buffer state coordination for decompression and encoding pipeline
- * Manages multiple temporary directories to overlap decompression and encoding
- * Supports configurable number of decompression threads and buffers
+ * Simplified buffer state for decompression and encoding coordination
  */
-class MultiBufferState {
+class BufferState {
 private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::atomic<bool> decompression_finished_{false};
     
-    // Buffer management
-    std::vector<std::string> buffer_dirs_;           // All buffer directory paths
-    std::unordered_set<size_t> ready_buffers_;       // Buffers ready for encoding
-    std::unordered_set<size_t> in_use_buffers_;      // Buffers currently being used by encoders
-    std::unordered_set<size_t> available_buffers_;   // Buffers available for decompression
+    std::string temp_base_;
+    std::queue<std::string> archives_;        // Archives to process
+    std::queue<std::string> ready_folders_;   // Folders ready for encoding
     
 public:
-    explicit MultiBufferState(const std::string& temp_base, uint32_t num_buffers);
-    ~MultiBufferState();
+    explicit BufferState(const std::string& temp_base);
+    ~BufferState();
     
-    // Decompressor calls this to get next available directory for decompression
-    std::string get_available_decomp_dir();
-    
-    // Decompressor calls this when a directory is ready for encoding
-    void signal_ready(const std::string& dir);
-    
-    // Encoders call this to get next available directory for encoding
-    std::string wait_for_ready_dir();
-    
-    // Encoders call this when done with a directory
-    void finish_with_dir(const std::string& dir);
-    
-    // Decompressor calls this when all decompression is finished
+    void add_archive(const std::string& archive_path);
+    bool get_next_archive(std::string& archive_path);
+    void signal_folder_ready(const std::string& date_folder);
+    std::string get_ready_folder();
     void signal_decompression_finished();
-    
-    // Get buffer directory count
-    size_t get_buffer_count() const { return buffer_dirs_.size(); }
-    
-private:
-    size_t find_buffer_index(const std::string& dir) const;
+    std::string get_date_folder(const std::string& archive_path) const;
 };
 
 } // namespace Parallel
