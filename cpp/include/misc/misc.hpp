@@ -4,6 +4,7 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 namespace misc {
@@ -13,21 +14,24 @@ inline void print_progress(size_t current, size_t total, const std::string &mess
   float progress = static_cast<float>(current) / total;
   int pos = static_cast<int>(bar_width * progress);
 
-  std::cout << "\r[";
+  // Build complete output string to avoid threading issues
+  std::ostringstream output;
+  output << "\r[";
   for (int i = 0; i < bar_width; ++i) {
     if (i < pos)
-      std::cout << "=";
+      output << "=";
     else if (i == pos)
-      std::cout << ">";
+      output << ">";
     else
-      std::cout << " ";
+      output << " ";
   }
-  std::cout << "] " << std::setw(3) << static_cast<size_t>(progress * 100.0f)
-            << "% (" << current << "/" << total << ")";
+  output << "] " << std::setw(3) << static_cast<size_t>(progress * 100.0f)
+         << "% (" << current << "/" << total << ")";
   if (!message.empty()) {
-    std::cout << " " << message;
+    output << " " << message;
   }
-  std::cout << std::flush;
+  
+  std::cout << output.str() << std::flush;
   if (current == total) {
     std::cout << "\n";
   }

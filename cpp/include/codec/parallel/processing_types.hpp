@@ -1,81 +1,180 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <queue>
 #include <mutex>
 #include <atomic>
-#include <unordered_map>
 #include <deque>
+#include <semaphore>
+#include <filesystem>
+#include <optional>
+#include <thread>
 
 namespace L2 {
 namespace Parallel {
 
-// Work item for asset queue (per-asset granularity)
-struct AssetWorkItem {
-    std::string folder_id;
-    std::string asset_dir;
-    std::string asset_code;
-    std::string date_str;
-    std::string temp_root;
+// Forward declaration
+extern std::counting_semaphore<> temp_slots;
+
+// RAII token for temp folder ownership - automatically cleans up on destruction
+class FolderToken {
+private:
+    std::string temp_root_;
+    bool valid_;
+
+public:
+    explicit FolderToken(std::string temp_root) 
+        : temp_root_(std::move(temp_root)), valid_(true) {}
+    
+    // Move-only semantics
+    FolderToken(const FolderToken&) = delete;
+    FolderToken& operator=(const FolderToken&) = delete;
+    
+    FolderToken(FolderToken&& other) noexcept 
+        : temp_root_(std::move(other.temp_root_)), valid_(other.valid_) {
+        other.valid_ = false;
+    }
+    
+    FolderToken& operator=(FolderToken&& other) noexcept {
+        if (this != &other) {
+            cleanup();
+            temp_root_ = std::move(other.temp_root_);
+            valid_ = other.valid_;
+            other.valid_ = false;
+        }
+        return *this;
+    }
+    
+    ~FolderToken() {
+        cleanup();
+    }
+    
+    const std::string& temp_root() const { return temp_root_; }
+    bool is_valid() const { return valid_; }
+
+private:
+    void cleanup() {
+        if (valid_) {
+            // Release semaphore immediately (non-blocking)
+            temp_slots.release();
+            
+            // Spawn detached thread for folder removal (non-blocking)
+            if (std::filesystem::exists(temp_root_)) {
+                std::string path_to_remove = temp_root_;
+                std::thread cleanup_thread([path_to_remove]() {
+                    std::filesystem::remove_all(path_to_remove);
+                });
+                cleanup_thread.detach();
+            }
+            
+            valid_ = false;
+        }
+    }
 };
 
-// Folder metadata with atomic refcounts
-struct FolderMeta {
-    std::atomic<int> remaining;    // decremented once per completed asset
-    int total;                     // fixed at enqueue-time (for progress)
-    std::atomic<int> processed;    // increments once per completed asset
-    std::string temp_root;         // folder to delete on completion
-    std::string date_str;          // e.g., 20170104 (for progress line)
+// Asset information for folder processing
+struct AssetInfo {
+    std::string asset_dir;
+    std::string asset_code;
+};
+
+// Work item for folder queue (per-folder granularity)
+struct FolderWorkItem {
+    std::string folder_id;
+    std::string date_str;
+    std::vector<AssetInfo> asset_list;
+    FolderToken folder_token;
     
-    FolderMeta(int total_assets, std::string temp_root_val, std::string date_str_val)
-        : remaining(total_assets), total(total_assets), processed(0),
-          temp_root(std::move(temp_root_val)), date_str(std::move(date_str_val)) {}
+    FolderWorkItem(std::string folder_id, std::string date_str, 
+                   std::vector<AssetInfo> asset_list, FolderToken folder_token)
+        : folder_id(std::move(folder_id)), date_str(std::move(date_str)), 
+          asset_list(std::move(asset_list)), folder_token(std::move(folder_token)) {}
     
-    // Delete copy constructor and assignment - atomics are not copyable
-    FolderMeta(const FolderMeta&) = delete;
-    FolderMeta& operator=(const FolderMeta&) = delete;
+    // Move-only semantics (due to FolderToken)
+    FolderWorkItem(const FolderWorkItem&) = delete;
+    FolderWorkItem& operator=(const FolderWorkItem&) = delete;
     
-    // Allow move constructor and assignment
-    FolderMeta(FolderMeta&& other) noexcept
-        : remaining(other.remaining.load()), total(other.total), processed(other.processed.load()),
-          temp_root(std::move(other.temp_root)), date_str(std::move(other.date_str)) {}
+    FolderWorkItem(FolderWorkItem&& other) noexcept
+        : folder_id(std::move(other.folder_id)), date_str(std::move(other.date_str)),
+          asset_list(std::move(other.asset_list)), folder_token(std::move(other.folder_token)) {}
     
-    FolderMeta& operator=(FolderMeta&& other) noexcept {
+    FolderWorkItem& operator=(FolderWorkItem&& other) noexcept {
         if (this != &other) {
-            remaining.store(other.remaining.load());
-            total = other.total;
-            processed.store(other.processed.load());
-            temp_root = std::move(other.temp_root);
+            folder_id = std::move(other.folder_id);
             date_str = std::move(other.date_str);
+            asset_list = std::move(other.asset_list);
+            folder_token = std::move(other.folder_token);
         }
         return *this;
     }
 };
 
-// Bounded MPMC asset queue (simple mutex + deque implementation)
-class AssetQueue {
-private:
-    mutable std::mutex mutex_;
-    std::deque<AssetWorkItem> queue_;
-    const size_t max_size_;
-
-public:
-    explicit AssetQueue(size_t max_size = 1000) : max_size_(max_size) {}
+// Active folder shared state for cooperative processing
+struct ActiveFolder {
+    std::string date_str;
+    std::vector<AssetInfo> asset_list;
+    FolderToken folder_token;
+    std::atomic<int> processed{0};
+    int total;
+    std::atomic<int> next_asset_index{0};
     
-    bool try_push(const AssetWorkItem& item);
-    bool try_pop(AssetWorkItem& item);
-    bool is_empty() const;
-    bool is_full() const;
+    ActiveFolder(std::string date_str, std::vector<AssetInfo> asset_list, FolderToken folder_token)
+        : date_str(std::move(date_str)), asset_list(std::move(asset_list)), 
+          folder_token(std::move(folder_token)), total(static_cast<int>(this->asset_list.size())) {}
+    
+    // Move-only semantics (manual implementation due to atomics)
+    ActiveFolder(const ActiveFolder&) = delete;
+    ActiveFolder& operator=(const ActiveFolder&) = delete;
+    
+    ActiveFolder(ActiveFolder&& other) noexcept
+        : date_str(std::move(other.date_str)), asset_list(std::move(other.asset_list)),
+          folder_token(std::move(other.folder_token)), processed(other.processed.load()),
+          total(other.total), next_asset_index(other.next_asset_index.load()) {}
+    
+    ActiveFolder& operator=(ActiveFolder&& other) noexcept {
+        if (this != &other) {
+            date_str = std::move(other.date_str);
+            asset_list = std::move(other.asset_list);
+            folder_token = std::move(other.folder_token);
+            processed.store(other.processed.load());
+            total = other.total;
+            next_asset_index.store(other.next_asset_index.load());
+        }
+        return *this;
+    }
 };
 
-// Global state - all atomic or simple containers
-extern std::atomic<int> active_temp_folders;
-extern std::atomic<bool> producers_done;
-extern AssetQueue asset_queue;
-extern std::unordered_map<std::string, FolderMeta> folder_meta;
-extern std::mutex folder_meta_mutex;
+// Closeable bounded MPMC folder queue
+class FolderQueue {
+private:
+    mutable std::mutex mutex_;
+    std::deque<FolderWorkItem> queue_;
+    const size_t max_size_;
+    bool closed_ = false;
+
+public:
+    explicit FolderQueue(size_t max_size = 100) : max_size_(max_size) {}
+    
+    bool try_push(FolderWorkItem&& item);
+    bool try_pop(FolderWorkItem& item);
+    std::optional<FolderWorkItem> try_pop();
+    bool is_empty() const;
+    bool is_full() const;
+    void close();
+    bool is_closed() const;
+    bool is_closed_and_empty() const;
+};
+
+// Global state following the L2_database design
+extern std::counting_semaphore<> temp_slots;
+extern FolderQueue folder_queue;
 extern std::queue<std::string> archive_queue;
 extern std::mutex archive_queue_mutex;
+
+// Active folder shared state (optional)
+extern std::unique_ptr<ActiveFolder> active_folder;
+extern std::mutex active_folder_mutex;
 
 } // namespace Parallel
 } // namespace L2

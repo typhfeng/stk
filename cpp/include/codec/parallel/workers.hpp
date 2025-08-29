@@ -42,19 +42,13 @@ bool decompress_7z(const std::string &archive_path, const std::string &output_di
 
 /**
  * Initialize decompression logging
- * @param total_archive_count Total number of archives to process
  */
-void init_decompression_logging(int total_archive_count);
+void init_decompression_logging();
 
 /**
  * Close decompression logging
  */
 void close_decompression_logging();
-
-/**
- * Initialize encoding progress tracking
- */
-void init_encoding_progress();
 
 } // namespace Parallel
 } // namespace L2

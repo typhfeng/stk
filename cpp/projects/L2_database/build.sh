@@ -48,16 +48,4 @@ else
     echo "Warning: Executable not found at expected location"
 fi
 
-# Run the executable automatically
-if [ -f "../../app_L2_database" ]; then
-    echo "Running app_L2_database..."
-    ../../app_L2_database
-else
-    echo "Error: app_L2_database not found in root directory"
-fi
-
-echo
-echo "========================================"
-echo "    L2_database build finished successfully!"
-echo "    compile_commands.json is available for IDE"
-echo "========================================"
+# Done

@@ -24,7 +24,10 @@ def run_L2_database():
     if result.returncode != 0:
         print(f"Build script exited with code: {result.returncode}")
         return False
-    return True
+    # Exec the built binary so signals go straight to C++
+    app_path = os.path.join(cpp_dir, "../../app_L2_database")
+    os.chdir(cpp_dir)
+    os.execv(app_path, [app_path])
 
 
 if __name__ == '__main__':

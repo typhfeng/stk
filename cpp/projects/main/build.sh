@@ -48,16 +48,4 @@ else
     echo "Warning: Executable not found at expected location"
 fi
 
-# Run the executable automatically
-if [ -f "../../app_main" ]; then
-    echo "Running app_main..."
-    ../../app_main
-else
-    echo "Error: app_main not found in root directory"
-fi
-
-echo
-echo "========================================"
-echo "    Build process finished successfully!"
-echo "    compile_commands.json is available for IDE"
-echo "========================================"
+# Done
