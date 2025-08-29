@@ -8,7 +8,7 @@ namespace Parallel {
 // Simplified configuration for high-performance processing
 struct ProcessingConfig {
   const uint32_t decompression_threads = 2;
-  const uint32_t decompression_buffers = decompression_threads * 2;
+  const uint32_t max_temp_folders = 4;  // disk backpressure limit
 
   const char *input_base = "/mnt/dev/sde/A_stock/L2";
   const char *output_base = "../../../output/L2_binary"; // "/mnt/dev/sde/A_stock/L2_binary";

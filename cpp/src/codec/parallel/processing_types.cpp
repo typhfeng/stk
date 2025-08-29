@@ -1,7 +1,5 @@
 #include "codec/parallel/processing_types.hpp"
 #include "codec/parallel/processing_config.hpp"
-#include <filesystem>
-#include <cstdlib>
 
 namespace L2 {
 namespace Parallel {
@@ -9,98 +7,43 @@ namespace Parallel {
 // Global configuration instance
 ProcessingConfig g_config;
 
-// TaskQueue implementation
-void TaskQueue::push(const EncodingTask& task) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    tasks_.push(task);
-    cv_.notify_one();
-}
+// Global state definitions
+std::atomic<int> active_temp_folders{0};
+std::atomic<bool> producers_done{false};
+AssetQueue asset_queue{1000}; // bounded to 1000 items
+std::unordered_map<std::string, FolderMeta> folder_meta;
+std::mutex folder_meta_mutex;
+std::queue<std::string> archive_queue;
+std::mutex archive_queue_mutex;
 
-bool TaskQueue::pop(EncodingTask& task) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait(lock, [this] { return !tasks_.empty() || finished_.load(); });
-    
-    if (tasks_.empty()) {
-        return false;
+// AssetQueue implementation
+bool AssetQueue::try_push(const AssetWorkItem& item) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (queue_.size() >= max_size_) {
+        return false; // queue is full
     }
-    
-    task = tasks_.front();
-    tasks_.pop();
+    queue_.push_back(item);
     return true;
 }
 
-void TaskQueue::finish() {
-    finished_.store(true);
-    cv_.notify_all();
-}
-
-size_t TaskQueue::size() const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
-    return tasks_.size();
-}
-
-// BufferState implementation
-BufferState::BufferState(const std::string& temp_base) 
-    : temp_base_(temp_base) {
-    std::filesystem::create_directories(temp_base_);
-}
-
-BufferState::~BufferState() {
-    if (std::filesystem::exists(temp_base_)) {
-        std::filesystem::remove_all(temp_base_);
-    }
-}
-
-void BufferState::add_archive(const std::string& archive_path) {
+bool AssetQueue::try_pop(AssetWorkItem& item) {
     std::lock_guard<std::mutex> lock(mutex_);
-    archives_.push(archive_path);
-    cv_.notify_all();
-}
-
-bool BufferState::get_next_archive(std::string& archive_path) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait(lock, [this] { 
-        return !archives_.empty() || decompression_finished_.load(); 
-    });
-    
-    if (archives_.empty()) {
+    if (queue_.empty()) {
         return false;
     }
-    
-    archive_path = archives_.front();
-    archives_.pop();
+    item = queue_.front();
+    queue_.pop_front();
     return true;
 }
 
-void BufferState::signal_folder_ready(const std::string& date_folder) {
+bool AssetQueue::is_empty() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    ready_folders_.push(date_folder);
-    cv_.notify_all();
+    return queue_.empty();
 }
 
-std::string BufferState::get_ready_folder() {
-    std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait(lock, [this] { 
-        return !ready_folders_.empty() || decompression_finished_.load(); 
-    });
-    
-    if (ready_folders_.empty()) {
-        return "";
-    }
-    
-    std::string date_folder = ready_folders_.front();
-    ready_folders_.pop();
-    return date_folder;
-}
-
-void BufferState::signal_decompression_finished() {
-    decompression_finished_.store(true);
-    cv_.notify_all();
-}
-
-std::string BufferState::get_date_folder(const std::string& archive_path) const {
-    std::string archive_name = std::filesystem::path(archive_path).stem().string();
-    return temp_base_ + "/" + archive_name;
+bool AssetQueue::is_full() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return queue_.size() >= max_size_;
 }
 
 } // namespace Parallel

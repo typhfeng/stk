@@ -1,7 +1,5 @@
 #pragma once
 
-#include "processing_types.hpp"
-#include <atomic>
 #include <string>
 
 namespace L2 {
@@ -13,38 +11,26 @@ namespace Parallel {
  * @param asset_code Stock code (e.g., 600000.SH)
  * @param date_str Date string in YYYYMMDD format
  * @param output_base Base output directory
+ * @param compression_ratio Output parameter for compression ratio achieved
  * @return true if processing succeeded
  */
 bool process_stock_data(const std::string &asset_dir,
                         const std::string &asset_code,
                         const std::string &date_str,
-                        const std::string &output_base);
+                        const std::string &output_base,
+                        double &compression_ratio);
 
 /**
- * Simple decompression worker
- * @param buffer_state Simple buffer state coordinator
- * @param task_queue Queue to send encoding tasks to
- * @param output_base Base output directory
- * @param total_assets Counter for total assets discovered
+ * Decompression worker (producer) - follows exact design from workers.cpp
  * @param worker_id ID of this decompression worker thread
  */
-void decompression_worker(BufferState &buffer_state,
-                          TaskQueue &task_queue,
-                          const std::string &output_base,
-                          std::atomic<int> &total_assets,
-                          unsigned int worker_id);
+void decompression_worker(unsigned int worker_id);
 
 /**
- * Simple encoding worker
- * @param task_queue Queue to receive encoding tasks from
- * @param buffer_state Simple buffer state coordinator
+ * Encoding worker (consumer) - follows exact design from workers.cpp
  * @param core_id CPU core to bind this thread to
- * @param completed_tasks Counter for completed tasks
  */
-void encoding_worker(TaskQueue &task_queue,
-                     BufferState &buffer_state,
-                     unsigned int core_id,
-                     std::atomic<int> &completed_tasks);
+void encoding_worker(unsigned int core_id);
 
 /**
  * Decompress 7z file using system command
@@ -53,6 +39,22 @@ void encoding_worker(TaskQueue &task_queue,
  * @return true if decompression succeeded
  */
 bool decompress_7z(const std::string &archive_path, const std::string &output_dir);
+
+/**
+ * Initialize decompression logging
+ * @param total_archive_count Total number of archives to process
+ */
+void init_decompression_logging(int total_archive_count);
+
+/**
+ * Close decompression logging
+ */
+void close_decompression_logging();
+
+/**
+ * Initialize encoding progress tracking
+ */
+void init_encoding_progress();
 
 } // namespace Parallel
 } // namespace L2
