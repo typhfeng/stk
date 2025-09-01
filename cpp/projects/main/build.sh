@@ -44,6 +44,7 @@ if [ -f "build/bin/app_main" ]; then
     echo "Moving executable to root directory..."
     mv "build/bin/app_main" "../../app_main"
     echo "Executable moved to: ../../app_main"
+    ../../app_main
 else
     echo "Warning: Executable not found at expected location"
 fi

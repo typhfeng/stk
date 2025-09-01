@@ -11,8 +11,8 @@ struct StockInfo {
     std::string name;
     std::string industry;
     std::string sub_industry;
-    std::chrono::year_month ipo_date;
-    std::chrono::year_month delist_date;  // Default constructed if not delisted
+    std::chrono::year_month start_date;
+    std::chrono::year_month end_date;  // Default constructed if not delisted
     bool is_delisted;
     
     StockInfo() : is_delisted(false) {}

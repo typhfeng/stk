@@ -23,17 +23,17 @@ std::unordered_map<std::string, StockInfo> ParseStockInfo(const std::string &sto
     stock_info.name = info["name"];
     stock_info.industry = info["industry"];
     stock_info.sub_industry = info["sub_industry"];
-    stock_info.ipo_date = ParseDateString(info["ipo_date"]);
+    stock_info.start_date = ParseDateString(info["ipo_date"]);
 
     std::string delist_str = info["delist_date"];
     if (!delist_str.empty()) {
-      stock_info.delist_date = ParseDateString(delist_str);
+      stock_info.end_date = ParseDateString(delist_str);
       stock_info.is_delisted = true;
     } else {
       stock_info.is_delisted = false;
       // Set delist date to the current month for active stocks
       auto now = std::chrono::year_month_day{std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now())};
-      stock_info.delist_date = std::chrono::year_month{now.year(), now.month()};
+      stock_info.end_date = std::chrono::year_month{now.year(), now.month()};
     }
 
     result[stock_code] = stock_info;

@@ -40,6 +40,7 @@ set(ZSTD_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../../package/zstd-1.5.7/libzstd.a
 set(SOURCES
     ../../src/codec/json_config.cpp
     ../../src/codec/binary_decoder_L1.cpp
+    ../../src/codec/binary_decoder_L2.cpp
     ../../src/technical_analysis.cpp
     ../../src/main.cpp
 )
@@ -55,6 +56,9 @@ set(HEADERS
     ../../include/define/CBuffer.hpp
     ../../include/codec/json_config.hpp
     ../../include/codec/binary_decoder_L1.hpp
+    ../../include/codec/binary_decoder_L2.hpp
+    ../../include/codec/delta_encoding.hpp
+    ../../include/codec/L2_DataType.hpp
     ../../include/technical_analysis.hpp
 )
 
@@ -80,7 +84,6 @@ add_custom_target(run_main
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running app_main"
 )
-
 
 # Print configuration info
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
