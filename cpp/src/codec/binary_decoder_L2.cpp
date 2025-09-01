@@ -55,8 +55,6 @@ size_t BinaryDecoder_L2::extract_count_from_filename(const std::string &filepath
   return 0; // Return 0 if count cannot be extracted
 }
 
-
-
 std::string BinaryDecoder_L2::time_to_string(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond_10ms) {
   std::ostringstream oss;
   oss << std::setfill('0') << std::setw(2) << static_cast<int>(hour) << ":"
@@ -99,6 +97,25 @@ const char *BinaryDecoder_L2::order_type_to_string(uint8_t order_type) {
 
 const char *BinaryDecoder_L2::order_dir_to_string(uint8_t order_dir) {
   return order_dir == 0 ? "BID" : "ASK";
+}
+
+const char *BinaryDecoder_L2::order_type_to_char(uint8_t order_type) {
+  switch (order_type) {
+  case 0:
+    return "M";
+  case 1:
+    return "C";
+  case 2:
+    return "A";
+  case 3:
+    return "T";
+  default:
+    return "?";
+  }
+}
+
+const char *BinaryDecoder_L2::order_dir_to_char(uint8_t order_dir) {
+  return order_dir == 0 ? "B" : "S";
 }
 
 void BinaryDecoder_L2::print_snapshot(const Snapshot &snapshot, size_t index) {
@@ -233,8 +250,8 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
 void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
 
   // hr mn sc  ms t d price   vol bid_ord_id ask_ord_id
-  // 9 15  0   2 0 0   601     1     137525          0
-  // 9 15  0   2 0 1   727     1          0     137524
+  // 9  15  0   2 0 0   601     1     137525          0
+  // 9  15  0   2 0 1   727     1          0     137524
 
   // Print aligned header using compile-time bit width calculations
   using namespace BitWidthFormat;
@@ -256,8 +273,8 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
               << std::setw(minute_width()) << std::right << static_cast<int>(order.minute) << " "
               << std::setw(second_width()) << std::right << static_cast<int>(order.second) << " "
               << std::setw(millisecond_width()) << std::right << static_cast<int>(order.millisecond) << " "
-              << std::setw(order_type_width()) << std::right << static_cast<int>(order.order_type) << " "
-              << std::setw(order_dir_width()) << std::right << static_cast<int>(order.order_dir) << " "
+              << std::setw(order_type_width()) << std::right << order_type_to_char(order.order_type) << " "
+              << std::setw(order_dir_width()) << std::right << order_dir_to_char(order.order_dir) << " "
               << std::setw(order_price_width()) << std::right << order.price << " "
               << std::setw(order_volume_width()) << std::right << order.volume << " "
               << std::setw(order_id_width()) << std::right << order.bid_order_id << " "
@@ -379,7 +396,7 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
     }
   }
 
-  std::cout << "L2 Decoder: Successfully decoded " << snapshots.size() << " snapshots from " << filepath << std::endl;
+  // std::cout << "L2 Decoder: Successfully decoded " << snapshots.size() << " snapshots from " << filepath << std::endl;
 
   return true;
 }
@@ -465,7 +482,7 @@ bool BinaryDecoder_L2::decode_orders(const std::string &filepath, std::vector<Or
     }
   }
 
-  std::cout << "L2 Decoder: Successfully decoded " << orders.size() << " orders from " << filepath << std::endl;
+  // std::cout << "L2 Decoder: Successfully decoded " << orders.size() << " orders from " << filepath << std::endl;
 
   return true;
 }
@@ -523,9 +540,9 @@ bool BinaryDecoder_L2::read_and_decompress_data(const std::string &filepath, voi
   actual_size = decompressed_size;
 
   // Print decompression statistics
-  double compression_ratio = static_cast<double>(original_size) / static_cast<double>(compressed_size);
-  std::cout << "L2 Decoder: Decompressed " << compressed_size << " bytes to " << original_size
-            << " bytes (ratio: " << std::fixed << std::setprecision(2) << compression_ratio << "x)" << std::endl;
+  // double compression_ratio = static_cast<double>(original_size) / static_cast<double>(compressed_size);
+  // std::cout << "L2 Decoder: Decompressed " << compressed_size << " bytes to " << original_size
+  //           << " bytes (ratio: " << std::fixed << std::setprecision(2) << compression_ratio << "x)" << std::endl;
 
   return true;
 }

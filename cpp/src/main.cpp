@@ -13,81 +13,123 @@ void ProcessAsset(const std::string &asset_code,
                   const std::string &l2_binary_dir,
                   const std::string &output_dir,
                   unsigned int core_id) {
-  // Set thread affinity to specific core (if supported on this platform)
-  if (misc::Affinity::supported()) {
-    if (!misc::Affinity::pin_to_core(core_id)) {
-      std::cerr << "Warning: Failed to set thread affinity for asset " << asset_code << " to core " << core_id << "\n";
-    }
+  // Set thread affinity to specific core once per thread (if supported)
+  static thread_local bool affinity_set = false;
+  if (!affinity_set && misc::Affinity::supported()) {
+    affinity_set = misc::Affinity::pin_to_core(core_id);
   }
-  try {
-    // Get month range for this asset
-    auto month_range = JsonConfig::GetMonthRange(stock_info.start_date, stock_info.end_date);
-
-    // Create an L2 decoder instance for this asset
-    L2::BinaryDecoder_L2 decoder;
-
-    // Process each month
-    for (const auto &ym : month_range) {
-      std::string year_month = JsonConfig::FormatYearMonth(ym);
-      std::string year = year_month.substr(0, 4);
-      std::string month = year_month.substr(5, 2);
+  
+  // Get month range for this asset - compute once
+  const auto month_range = JsonConfig::GetMonthRange(stock_info.start_date, stock_info.end_date);
+  
+  // Pre-allocate decoder with estimated capacity to avoid reallocations
+  L2::BinaryDecoder_L2 decoder(50000, 250000); // Estimated snapshots and orders per asset
+  
+  // Pre-allocate reusable containers to avoid repeated allocations
+  std::vector<L2::Snapshot> snapshots;
+  std::vector<L2::Order> orders;
+  snapshots.reserve(10000);  // Reserve space for typical daily snapshots
+  orders.reserve(50000);     // Reserve space for typical daily orders
+  
+  // Pre-allocate string buffers for path construction
+  std::string month_path, asset_path, snapshots_file, orders_file;
+  month_path.reserve(l2_binary_dir.size() + 16);    // Reserve for base path + "/YYYY/MM"
+  asset_path.reserve(l2_binary_dir.size() + 32);    // Reserve for full asset path
+  snapshots_file.reserve(256);                      // Reserve for full file path
+  orders_file.reserve(256);                         // Reserve for full file path
+  
+  // Cache commonly used string literals to avoid repeated allocations
+  static constexpr std::string_view snapshots_prefix = "snapshots_";
+  static constexpr std::string_view orders_prefix = "orders_";
+  static constexpr std::string_view bin_suffix = ".bin";
+  static constexpr char path_sep = '/';
+  
+  // Process each month
+  for (const auto &ym : month_range) {
+    const std::string year_month = JsonConfig::FormatYearMonth(ym);
+    const std::string_view year = std::string_view(year_month).substr(0, 4);
+    const std::string_view month = std::string_view(year_month).substr(5, 2);
+    
+    // Construct month path efficiently using single allocation
+    month_path.clear();
+    month_path.reserve(l2_binary_dir.size() + 1 + year.size() + 1 + month.size());
+    month_path.append(l2_binary_dir).push_back(path_sep);
+    month_path.append(year).push_back(path_sep);
+    month_path.append(month);
+    
+    // Check if month directory exists once
+    const std::filesystem::path month_fs_path(month_path);
+    if (!std::filesystem::exists(month_fs_path)) {
+      continue; // Skip silently for performance
+    }
+    
+    // Pre-compute asset path prefix for efficiency
+    const size_t month_path_size = month_path.size();
+    month_path.push_back(path_sep);
+    const size_t day_prefix_size = month_path.size();
+    
+    // Use error_code version to avoid exceptions in directory iteration
+    std::error_code ec;
+    for (const auto &day_entry : std::filesystem::directory_iterator(month_fs_path, ec)) {
+      if (ec || !day_entry.is_directory(ec)) continue;
       
-      std::string month_path = l2_binary_dir + "/" + year + "/" + month;
+      const auto day_filename = day_entry.path().filename().string();
       
-      // Check if month directory exists
-      if (!std::filesystem::exists(month_path)) {
-        std::cout << "  No directory found for " << asset_code << " in " << year_month << "\n";
-        continue;
+      // Construct asset path efficiently by reusing month_path buffer
+      month_path.resize(day_prefix_size);
+      asset_path.clear();
+      asset_path.reserve(month_path.size() + day_filename.size() + 1 + asset_code.size());
+      asset_path.append(month_path).append(day_filename);
+      asset_path.push_back(path_sep);
+      asset_path.append(asset_code);
+      
+      // Check if asset directory exists for this day
+      const std::filesystem::path asset_fs_path(asset_path);
+      if (!std::filesystem::exists(asset_fs_path)) {
+        continue; // Skip if asset wasn't traded this day
       }
       
-      // Iterate through all days in this month
-      for (const auto &day_entry : std::filesystem::directory_iterator(month_path)) {
-        if (!day_entry.is_directory()) continue;
+      // Reset file paths and flags for early exit optimization
+      snapshots_file.clear();
+      orders_file.clear();
+      bool found_snapshots = false, found_orders = false;
+      
+      // Find the snapshot and order files in the asset directory
+      for (const auto &file_entry : std::filesystem::directory_iterator(asset_fs_path, ec)) {
+        if (ec || !file_entry.is_regular_file(ec)) continue;
         
-        std::string day = day_entry.path().filename().string();
-        std::string asset_path = month_path + "/" + day + "/" + asset_code;
+        const auto filename = file_entry.path().filename().string();
+        const std::string_view filename_view(filename);
         
-        // Check if asset directory exists for this day
-        if (!std::filesystem::exists(asset_path)) {
-          continue; // Skip if asset wasn't traded this day
+        if (!found_snapshots && filename_view.starts_with(snapshots_prefix) && filename_view.ends_with(bin_suffix)) {
+          snapshots_file = file_entry.path().string();
+          found_snapshots = true;
+          if (found_orders) break; // Both files found, exit early
+        } else if (!found_orders && filename_view.starts_with(orders_prefix) && filename_view.ends_with(bin_suffix)) {
+          orders_file = file_entry.path().string();
+          found_orders = true;
+          if (found_snapshots) break; // Both files found, exit early
         }
-        
-        // Process snapshots and orders for this day
-        std::string snapshots_file, orders_file;
-        
-        // Find the snapshot and order files in the asset directory
-        for (const auto &file_entry : std::filesystem::directory_iterator(asset_path)) {
-          if (!file_entry.is_regular_file()) continue;
-          
-          std::string filename = file_entry.path().filename().string();
-          if (filename.find("snapshots_") == 0 && filename.ends_with(".bin")) {
-            snapshots_file = file_entry.path().string();
-          } else if (filename.find("orders_") == 0 && filename.ends_with(".bin")) {
-            orders_file = file_entry.path().string();
-          }
-        }
-        
-        // Process the files if they exist
-        if (!snapshots_file.empty()) {
-          std::vector<L2::Snapshot> snapshots;
-          if (decoder.decode_snapshots(snapshots_file, snapshots)) {
-            std::cout << "  Processed " << snapshots.size() << " snapshots for " << asset_code 
-                      << " on " << year << "-" << month << "-" << day << "\n";
-          }
-        }
-        
-        if (!orders_file.empty()) {
-          std::vector<L2::Order> orders;
-          if (decoder.decode_orders(orders_file, orders)) {
-            std::cout << "  Processed " << orders.size() << " orders for " << asset_code 
-                      << " on " << year << "-" << month << "-" << day << "\n";
-          }
-        }
+      }
+      
+      // Process the files if they exist - decode directly without intermediate checks
+      if (found_snapshots) {
+        snapshots.clear(); // Reuse vector, just clear contents
+        decoder.decode_snapshots(snapshots_file, snapshots);
+        // decoder.print_all_snapshots(snapshots);
+        // exit(1);
+      }
+      
+      if (found_orders) {
+        orders.clear(); // Reuse vector, just clear contents  
+        decoder.decode_orders(orders_file, orders);
+        decoder.print_all_orders(orders);
+        exit(1);
       }
     }
-
-  } catch (const std::exception &e) {
-    std::cerr << "Error processing asset " << asset_code << ": " << e.what() << "\n";
+    
+    // Restore month_path to original size for next iteration
+    month_path.resize(month_path_size);
   }
 }
 

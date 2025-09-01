@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+// https://github.com/fpga2u/AXOrderBook FPGA-real-time-parser
 // https://zhuanlan.zhihu.com/p/649040063 深交所orderbook重建
 // https://zhuanlan.zhihu.com/p/649400934 上交所orderbook重建
 // https://zhuanlan.zhihu.com/p/662438311 沪市level2数据重建
@@ -146,7 +147,7 @@ constexpr ColumnMeta Snapshot_Schema[] = {
     {"all_ask_volume",     DataType::INT,   true, 22,   true  },// "总量变化平滑，使用delta编码"},
 
     // order
-    {"millisecon",        DataType::INT,   true, 7,     true  },// "取值范围 0-127，7bit 足够，取值连续, 使用delta编码"},
+    {"millisecond",       DataType::INT,   true, 7,     true  },// "取值范围 0-127，7bit 足够，取值连续, 使用delta编码"},
     {"order_type",         DataType::INT,   false, 2,   false },// "仅增删改成交四种值，直接存储"},
     {"order_dir",          DataType::BOOL,  false, 1,   false },// "仅bid ask 两种值，直接存储"},
     {"price",              DataType::INT,   true,  14,  true  },// "价格连续(0.01 RMB units)，使用delta编码"},

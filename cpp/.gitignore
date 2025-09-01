@@ -2,6 +2,7 @@
 build/
 *.exe
 app_main
+app_main_csv
 app_L1_database
 app_L2_database
 compile_commands.json

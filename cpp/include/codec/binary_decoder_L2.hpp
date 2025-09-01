@@ -111,6 +111,8 @@ private:
 
   static const char *order_type_to_string(uint8_t order_type);
   static const char *order_dir_to_string(uint8_t order_dir);
+  static const char *order_type_to_char(uint8_t order_type);
+  static const char *order_dir_to_char(uint8_t order_dir);
 };
 
 } // namespace L2
