@@ -32,7 +32,7 @@ inline const char *temp_base = "../../../output/tmp";
 // Debug option to skip decompression and encode directly from input_base
 inline constexpr bool skip_decompression = false;
 
-inline constexpr size_t DEFAULT_ENCODER_CAPACITY = 5000;    // 3秒全量快照 4*3600/3=4800
+inline constexpr size_t DEFAULT_ENCODER_CAPACITY = 5000;   // 3秒全量快照 4*3600/3=4800
 inline constexpr size_t DEFAULT_ENCODER_MAX_SIZE = 100000; // 逐笔合并(增删改成交)
 
 // modern compression algo maynot benefit from delta encoding
@@ -81,7 +81,7 @@ inline bool is_valid_market_asset(const std::string &asset_code) {
 
   // Shanghai Stock Exchange (SSE)
   if (code_prefix == "600" || code_prefix == "601" || code_prefix == "603" || code_prefix == "605" || // 沪市主板
-      // code_prefix == "900" ||                                                                         // 沪市B股
+      0 ||                                                                                            // code_prefix == "900" || // 沪市B股
       code_prefix == "688" ||                                                                         // 科创板
       code_prefix == "689") {                                                                         // 科创板存托凭证
     return false;
@@ -90,7 +90,7 @@ inline bool is_valid_market_asset(const std::string &asset_code) {
   // Shenzhen Stock Exchange (SZSE)
   if (code_prefix == "000" || code_prefix == "001" ||                         // 深市主板
       code_prefix == "002" || code_prefix == "003" || code_prefix == "004" || // 深市中小板
-      // code_prefix == "200" || code_prefix == "201" ||                         // 深市B股
+      0 ||                                                                    // code_prefix == "200" || code_prefix == "201" || // 深市B股
       code_prefix == "300" || code_prefix == "301" || code_prefix == "302" || // 创业板
       code_prefix == "309") {                                                 // 创业板存托凭证
     return false;
@@ -136,8 +136,8 @@ constexpr ColumnMeta Snapshot_Schema[] = {
     {"trade_count",        DataType::INT,   false, 8,   false },// "波动较大, 多数时候为0或小值, 直接存储"},
     {"volume",             DataType::INT,   false, 16,  false },// "波动较大，但也有大量0, 直接存储"},
     {"turnover",           DataType::INT,   false, 32,  false },// "波动较大，但也有大量0, 直接存储"},
-    {"high",               DataType::INT,   true,  14,  true  },// "价格连续(0.01 RMB units)，使用delta编码"},
-    {"low",                DataType::INT,   true,  14,  true  },// "价格连续(0.01 RMB units)，使用delta编码"},
+    // {"high",               DataType::INT,   true,  14,  true  },// "价格连续(0.01 RMB units)，使用delta编码"},
+    // {"low",                DataType::INT,   true,  14,  true  },// "价格连续(0.01 RMB units)，使用delta编码"},
     {"close",              DataType::INT,   true,  14,  true  },// "价格连续(0.01 RMB units)，使用delta编码"},
     {"bid_price_ticks[10]",DataType::INT,   true,  14,  true  },// "订单价长时间静态(0.01 RMB units)，局部跳变，使用delta编码"},
     {"bid_volumes[10]",    DataType::INT,   false, 14,  false },// "订单量长时间静态，局部跳变，直接存储"},
@@ -161,12 +161,12 @@ constexpr ColumnMeta Snapshot_Schema[] = {
 // clang-format on
 
 struct Snapshot {
-  uint8_t hour;                 // 5bit
-  uint8_t minute;               // 6bit
-  uint8_t second;               // 6bit
-  uint8_t trade_count;          // 8bit
-  uint16_t volume;              // 16bit - units of 100 shares
-  uint32_t turnover;            // 32bit - RMB
+  uint8_t hour;        // 5bit
+  uint8_t minute;      // 6bit
+  uint8_t second;      // 6bit
+  uint8_t trade_count; // 8bit
+  uint16_t volume;     // 16bit - units of 100 shares
+  uint32_t turnover;   // 32bit - RMB
   // uint16_t high;                // 14bit - price in 0.01 RMB units
   // uint16_t low;                 // 14bit - price in 0.01 RMB units
   uint16_t close;               // 14bit - price in 0.01 RMB units
