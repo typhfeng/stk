@@ -10,49 +10,52 @@
 
 namespace L2 {
 
-// Inline constexpr functions to calculate column widths from bit widths
-// These will be optimized away at compile time
+// Automatic column width calculation from schema bit widths only
 namespace BitWidthFormat {
-// Calculate number of decimal digits needed for a given bit width
-inline constexpr int calc_width(uint8_t bit_width) {
-  return bit_width <= 3 ? 1 : // 1-3 bits: 1 digit
-             bit_width <= 6 ? 2
-                            : // 4-6 bits: 2 digits
-             bit_width <= 10 ? 3
-                             : // 7-10 bits: 3 digits
-             bit_width <= 13 ? 4
-                             : // 11-13 bits: 4 digits
-             bit_width <= 16 ? 5
-                             : // 14-16 bits: 5 digits
-             bit_width <= 32 ? 10
-                             : 15; // 17-32 bits: 10 digits, >32: 15 digits
+// Calculate decimal digits needed for max value of given bit width
+inline constexpr int calc_digits(uint8_t bit_width) {
+  if (bit_width == 0)
+    return 1;
+  uint64_t max_val = (1ull << bit_width) - 1;
+
+  // Count digits by successive division
+  int digits = 0;
+  do {
+    digits++;
+    max_val /= 10;
+  } while (max_val > 0);
+
+  return digits;
 }
 
-// Helper function to get column bit width
-inline constexpr int get_column_width(std::string_view column_name) {
+// Get column width purely from schema bit width
+inline constexpr int get_width(std::string_view column_name) {
   constexpr size_t schema_size = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
-  return calc_width(SchemaUtils::get_column_bitwidth(Snapshot_Schema, schema_size, column_name));
+  uint8_t bit_width = SchemaUtils::get_column_bitwidth(Snapshot_Schema, schema_size, column_name);
+  return calc_digits(bit_width);
 }
 
-// Snapshot field widths - using schema names
-inline constexpr int hour_width() { return get_column_width("hour"); }
-inline constexpr int minute_width() { return get_column_width("minute"); }
-inline constexpr int second_width() { return get_column_width("second"); }
-inline constexpr int trade_count_width() { return get_column_width("trade_count"); }
-inline constexpr int volume_width() { return get_column_width("volume"); }
-inline constexpr int turnover_width() { return get_column_width("turnover"); }
-inline constexpr int price_width() { return get_column_width("high"); } // Using high as reference for price width
-inline constexpr int direction_width() { return get_column_width("direction"); }
-inline constexpr int vwap_width() { return get_column_width("all_bid_vwap"); }
-inline constexpr int total_volume_width() { return get_column_width("all_bid_volume"); }
+// Snapshot field widths - purely derived from schema
+inline constexpr int hour_width() { return get_width("hour"); }
+inline constexpr int minute_width() { return get_width("minute"); }
+inline constexpr int second_width() { return get_width("second"); }
+inline constexpr int trade_count_width() { return get_width("trade_count"); }
+inline constexpr int volume_width() { return get_width("volume"); }
+inline constexpr int turnover_width() { return get_width("turnover"); }
+inline constexpr int price_width() { return get_width("high"); }
+inline constexpr int direction_width() { return get_width("direction"); }
+inline constexpr int vwap_width() { return get_width("all_bid_vwap"); }
+inline constexpr int total_volume_width() { return get_width("all_bid_volume"); }
+inline constexpr int bid_volume_width() { return get_width("bid_volumes[10]"); }
+inline constexpr int ask_volume_width() { return get_width("ask_volumes[10]"); }
 
-// Order field widths - using schema names
-inline constexpr int order_type_width() { return get_column_width("order_type"); }
-inline constexpr int order_dir_width() { return get_column_width("order_dir"); }
-inline constexpr int order_price_width() { return get_column_width("price"); }
-inline constexpr int order_volume_width() { return get_column_width("volume"); }
-inline constexpr int order_id_width() { return get_column_width("bid_order_id"); }
-inline constexpr int millisecond_width() { return get_column_width("millisecond"); } // Using schema-defined bit width
+// Order field widths - purely derived from schema
+inline constexpr int order_type_width() { return get_width("order_type"); }
+inline constexpr int order_dir_width() { return get_width("order_dir"); }
+inline constexpr int order_price_width() { return get_width("price"); }
+inline constexpr int order_volume_width() { return get_width("volume"); }
+inline constexpr int order_id_width() { return get_width("bid_order_id"); }
+inline constexpr int millisecond_width() { return get_width("millisecond"); }
 } // namespace BitWidthFormat
 
 class BinaryDecoder_L2 {
@@ -93,8 +96,6 @@ public:
 
   // Helper function to extract count from filename (used by dictionary compression)
   static size_t extract_count_from_filename(const std::string &filepath);
-
-
 
 private:
   // Reusable vector tables for delta decoding (snapshots)

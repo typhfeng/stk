@@ -12,36 +12,36 @@ namespace BinaryEncoder_L1 {
 
 class Encoder {
 public:
-    // Constructor and destructor
-    Encoder();
-    ~Encoder();
+  // Constructor and destructor
+  Encoder();
+  ~Encoder();
 
-    // Main encoding interface
-    std::vector<uint8_t> EncodeMonthSnapshots(const std::vector<L1::Snapshot>& records);
+  // Main encoding interface
+  std::vector<uint8_t> EncodeMonthSnapshots(const std::vector<L1::Snapshot> &records);
 
 private:
-    // ========================================================================
-    // CORE ENCODING FUNCTIONS
-    // ========================================================================
+  // ========================================================================
+  // CORE ENCODING FUNCTIONS
+  // ========================================================================
 
-    // Differential encoding
-    void ApplyDifferentialEncoding(std::vector<L1::Snapshot>& records);
+  // Differential encoding
+  void ApplyDifferentialEncoding(std::vector<L1::Snapshot> &records);
 
-    // ========================================================================
-    // UTILITY FUNCTIONS
-    // ========================================================================
+  // ========================================================================
+  // UTILITY FUNCTIONS
+  // ========================================================================
 
-    // Use L1::PriceToTick from L1_DataType.hpp
+  // Use L1::PriceToTick from L1_DataType.hpp
 
-    // ========================================================================
-    // MEMBER VARIABLES
-    // ========================================================================
+  // ========================================================================
+  // MEMBER VARIABLES
+  // ========================================================================
 
-    // Buffer configuration
-    static constexpr size_t BUFFER_SIZE = 1024 * 1024; // 1MB buffer
+  // Buffer configuration
+  static constexpr size_t BUFFER_SIZE = 1024 * 1024; // 1MB buffer
 
-    // I/O buffers
-    std::vector<uint8_t> buffer_;
+  // I/O buffers
+  std::vector<uint8_t> buffer_;
 };
 
 } // namespace BinaryEncoder_L1

@@ -164,8 +164,8 @@ struct Snapshot {
   uint8_t trade_count;          // 8bit
   uint16_t volume;              // 16bit - units of 100 shares
   uint32_t turnover;            // 32bit - RMB
-  uint16_t high;                // 14bit - price in 0.01 RMB units
-  uint16_t low;                 // 14bit - price in 0.01 RMB units
+  // uint16_t high;                // 14bit - price in 0.01 RMB units
+  // uint16_t low;                 // 14bit - price in 0.01 RMB units
   uint16_t close;               // 14bit - price in 0.01 RMB units
   uint16_t bid_price_ticks[10]; // 14bits * 10 - prices in 0.01 RMB units
   uint16_t bid_volumes[10];     // 14bits * 10 - units of 100 shares
@@ -239,7 +239,7 @@ constexpr uint32_t VOLUME_BOUND = SchemaUtils::bitwidth_to_max(
 constexpr uint64_t TURNOVER_BOUND = SchemaUtils::bitwidth_to_max(
     SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "turnover"));
 constexpr uint32_t PRICE_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "high"));
+    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "close"));
 constexpr uint32_t ORDERBOOK_VOLUME_BOUND = SchemaUtils::bitwidth_to_max(
     SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_volumes[10]"));
 constexpr uint32_t VWAP_BOUND = SchemaUtils::bitwidth_to_max(

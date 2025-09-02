@@ -122,8 +122,8 @@ void BinaryDecoder_L2::print_snapshot(const Snapshot &snapshot, size_t index) {
   std::cout << "=== Snapshot " << index << " ===" << std::endl;
   std::cout << "Time: " << time_to_string(snapshot.hour, snapshot.minute, snapshot.second) << std::endl;
   std::cout << "Close: " << std::fixed << std::setprecision(2) << price_to_rmb(snapshot.close) << " RMB" << std::endl;
-  std::cout << "High: " << price_to_rmb(snapshot.high) << " RMB" << std::endl;
-  std::cout << "Low: " << price_to_rmb(snapshot.low) << " RMB" << std::endl;
+  // std::cout << "High: " << price_to_rmb(snapshot.high) << " RMB" << std::endl;
+  // std::cout << "Low: " << price_to_rmb(snapshot.low) << " RMB" << std::endl;
   std::cout << "Volume: " << volume_to_shares(snapshot.volume) << " shares" << std::endl;
   std::cout << "Turnover: " << snapshot.turnover << " fen" << std::endl;
   std::cout << "Trade Count (incremental): " << static_cast<int>(snapshot.trade_count) << std::endl;
@@ -177,8 +177,8 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
             << std::setw(trade_count_width()) << std::right << "trd" << " "
             << std::setw(volume_width()) << std::right << "vol" << " "
             << std::setw(turnover_width()) << std::right << "turnover" << " "
-            << std::setw(price_width()) << std::right << "high" << " "
-            << std::setw(price_width()) << std::right << "low" << " "
+            // << std::setw(price_width()) << std::right << "high" << " "
+            // << std::setw(price_width()) << std::right << "low" << " "
             << std::setw(price_width()) << std::right << "close" << " ";
 
   // bid_price_ticks[10] - using price bit width from schema
@@ -186,9 +186,9 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
     std::cout << std::setw(price_width()) << std::right << ("bp" + std::to_string(i)) << " ";
   }
 
-  // bid_volumes[10] - using volume bit width from schema
+  // bid_volumes[10] - using schema-derived width
   for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(get_column_width("bid_volumes[10]")) << std::right << ("bv" + std::to_string(i)) << " ";
+    std::cout << std::setw(bid_volume_width()) << std::right << ("bv" + std::to_string(i)) << " ";
   }
 
   // ask_price_ticks[10] - using price bit width from schema
@@ -196,9 +196,9 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
     std::cout << std::setw(price_width()) << std::right << ("ap" + std::to_string(i)) << " ";
   }
 
-  // ask_volumes[10] - using volume bit width from schema
+  // ask_volumes[10] - using schema-derived width
   for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(get_column_width("ask_volumes[10]")) << std::right << ("av" + std::to_string(i)) << " ";
+    std::cout << std::setw(ask_volume_width()) << std::right << ("av" + std::to_string(i)) << " ";
   }
 
   std::cout << std::setw(direction_width()) << std::right << "d" << " "
@@ -215,8 +215,8 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
               << std::setw(trade_count_width()) << std::right << static_cast<int>(snapshot.trade_count) << " "
               << std::setw(volume_width()) << std::right << snapshot.volume << " "
               << std::setw(turnover_width()) << std::right << snapshot.turnover << " "
-              << std::setw(price_width()) << std::right << snapshot.high << " "
-              << std::setw(price_width()) << std::right << snapshot.low << " "
+              // << std::setw(price_width()) << std::right << snapshot.high << " "
+              // << std::setw(price_width()) << std::right << snapshot.low << " "
               << std::setw(price_width()) << std::right << snapshot.close << " ";
 
     // Output bid_price_ticks[10] - using price bit width from schema
@@ -224,9 +224,9 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
       std::cout << std::setw(price_width()) << std::right << snapshot.bid_price_ticks[i] << " ";
     }
 
-    // Output bid_volumes[10] - using volume bit width from schema
+    // Output bid_volumes[10] - using schema-derived width
     for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(get_column_width("bid_volumes[10]")) << std::right << snapshot.bid_volumes[i] << " ";
+      std::cout << std::setw(bid_volume_width()) << std::right << snapshot.bid_volumes[i] << " ";
     }
 
     // Output ask_price_ticks[10] - using price bit width from schema
@@ -234,9 +234,9 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
       std::cout << std::setw(price_width()) << std::right << snapshot.ask_price_ticks[i] << " ";
     }
 
-    // Output ask_volumes[10] - using volume bit width from schema
+    // Output ask_volumes[10] - using schema-derived width
     for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(get_column_width("ask_volumes[10]")) << std::right << snapshot.ask_volumes[i] << " ";
+      std::cout << std::setw(ask_volume_width()) << std::right << snapshot.ask_volumes[i] << " ";
     }
 
     std::cout << std::setw(direction_width()) << std::right << (snapshot.direction ? 1 : 0) << " "
@@ -327,8 +327,8 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
     temp_hours.resize(count);
     temp_minutes.resize(count);
     temp_seconds.resize(count);
-    temp_highs.resize(count);
-    temp_lows.resize(count);
+    // temp_highs.resize(count);
+    // temp_lows.resize(count);
     temp_closes.resize(count);
     temp_all_bid_vwaps.resize(count);
     temp_all_ask_vwaps.resize(count);
@@ -345,8 +345,8 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
       temp_hours[i] = snapshots[i].hour;
       temp_minutes[i] = snapshots[i].minute;
       temp_seconds[i] = snapshots[i].second;
-      temp_highs[i] = snapshots[i].high;
-      temp_lows[i] = snapshots[i].low;
+      // temp_highs[i] = snapshots[i].high;
+      // temp_lows[i] = snapshots[i].low;
       temp_closes[i] = snapshots[i].close;
       temp_all_bid_vwaps[i] = snapshots[i].all_bid_vwap;
       temp_all_ask_vwaps[i] = snapshots[i].all_ask_vwap;
@@ -363,8 +363,8 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
     DeltaUtils::decode_deltas(temp_hours.data(), count);
     DeltaUtils::decode_deltas(temp_minutes.data(), count);
     DeltaUtils::decode_deltas(temp_seconds.data(), count);
-    DeltaUtils::decode_deltas(temp_highs.data(), count);
-    DeltaUtils::decode_deltas(temp_lows.data(), count);
+    // DeltaUtils::decode_deltas(temp_highs.data(), count);
+    // DeltaUtils::decode_deltas(temp_lows.data(), count);
     DeltaUtils::decode_deltas(temp_closes.data(), count);
     DeltaUtils::decode_deltas(temp_all_bid_vwaps.data(), count);
     DeltaUtils::decode_deltas(temp_all_ask_vwaps.data(), count);
@@ -381,8 +381,8 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
       snapshots[i].hour = temp_hours[i];
       snapshots[i].minute = temp_minutes[i];
       snapshots[i].second = temp_seconds[i];
-      snapshots[i].high = temp_highs[i];
-      snapshots[i].low = temp_lows[i];
+      // snapshots[i].high = temp_highs[i];
+      // snapshots[i].low = temp_lows[i];
       snapshots[i].close = temp_closes[i];
       snapshots[i].all_bid_vwap = temp_all_bid_vwaps[i];
       snapshots[i].all_ask_vwap = temp_all_ask_vwaps[i];

@@ -115,14 +115,14 @@ void ProcessAsset(const std::string &asset_code,
       // Process the files if they exist - decode directly without intermediate checks
       if (found_snapshots) {
         snapshots.clear(); // Reuse vector, just clear contents
-        decoder.decode_snapshots(snapshots_file, snapshots);
+        decoder.decode_snapshots(snapshots_file, snapshots, L2::ENABLE_DELTA_ENCODING);
         // decoder.print_all_snapshots(snapshots);
         // exit(1);
       }
       
       if (found_orders) {
         orders.clear(); // Reuse vector, just clear contents  
-        decoder.decode_orders(orders_file, orders);
+        decoder.decode_orders(orders_file, orders, L2::ENABLE_DELTA_ENCODING);
         decoder.print_all_orders(orders);
         exit(1);
       }
