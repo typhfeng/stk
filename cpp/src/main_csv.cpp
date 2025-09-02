@@ -25,8 +25,8 @@
 
 // Configuration constants
 namespace Config {
-    constexpr size_t DEFAULT_ENCODER_CAPACITY = 5000;
-    constexpr size_t DEFAULT_ENCODER_MAX_SIZE = 1000000;
+    constexpr size_t DEFAULT_ENCODER_CAPACITY = 5000; // 3秒全量快照 4*3600/3=4800
+    constexpr size_t DEFAULT_ENCODER_MAX_SIZE = 1000000; // 逐笔合并(增删改成交)
     constexpr const char* MARKET_CSV_NAME = "行情.csv";
     constexpr const char* ORDER_CSV_NAME = "逐笔委托.csv";
     constexpr const char* TRADE_CSV_NAME = "逐笔成交.csv";
@@ -271,7 +271,7 @@ public:
         const auto &[existing_snapshots_file, existing_orders_file] = binary_files;
         
         if (has_existing_binaries) {
-            std::cout << "    Found existing binaries for " << asset_code << " on " << date_str << ", skipping extraction/encoding\n";
+            // std::cout << "    Found existing binaries for " << asset_code << " on " << date_str << ", skipping extraction/encoding\n";
             return BinaryManager::decode_binary_files(existing_snapshots_file, existing_orders_file, decoder);
         }
         
@@ -456,7 +456,7 @@ void ProcessAsset(const std::string &asset_code, const JsonConfig::StockInfo &st
     for (const std::string &date_str : dates) {
         if (AssetProcessor::process_asset_day_csv(asset_code, date_str, temp_base, l2_archive_base, encoder, decoder)) {
             processed_days++;
-            std::cout << "  Processed: " << date_str << " (day " << processed_days << ")\n";
+            // std::cout << "  Processed: " << date_str << " (day " << processed_days << ")\n";
             
             // Optionally clean up day-specific temp files to save disk space
             // const std::string day_temp_dir = PathUtils::generate_temp_asset_dir(temp_base, date_str, asset_code);
@@ -488,10 +488,10 @@ int main() {
         // Display configuration information
         AppConfiguration::print_configuration_info(paths, app_config, stock_info_map.size());
         
-        // Prepare temporary directory
-        if (std::filesystem::exists(paths.temp_base)) {
-            std::filesystem::remove_all(paths.temp_base);
-        }
+        // // Prepare temporary directory
+        // if (std::filesystem::exists(paths.temp_base)) {
+        //     std::filesystem::remove_all(paths.temp_base);
+        // }
         std::filesystem::create_directories(paths.temp_base);
         
         // Process assets using thread pool
