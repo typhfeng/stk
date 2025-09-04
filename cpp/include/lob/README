@@ -1,0 +1,51 @@
+* this is a taker driven model that does not try to determine matching sequence by itself, but use maker id info in taker order directly
+*
+* 最大威胁:
+* 1. 同一ms内(甚至不同时刻间), order之间可能为乱序
+* 2. order信息可能丢失
+* 3. snapshot数据为异步 (对于沪深两市, 快照的时间点不确定, 并不是0ms对齐的, 这意味着快照只能作为大规模偏移后的模糊矫正)
+
+=========================================================================================
+* implementation-1(reorder-queue-based):
+* - MAKER订单(挂单)可以立即执行当且仅当:
+*   1. (假设已满足) 对应的maker_id 在lob中不存在
+*   2. (需要检查)   目标订单价确认在当前lob本方价格中 (交易所会自动将对手方maker单拆分为taker+maker, 但是不保证行情顺序)
+*   3. (假设已满足) timestamp >= last_processed_timestamp
+*   4. (假设已满足) volume > 0
+*
+* - TAKER订单(吃单)可以立即执行当且仅当:
+*   1. (需要检查)   对应的maker_id 在lob中存在
+*   2. (需要检查)   目标订单价确认在当前lob对手价格中
+*   3. (假设已满足) timestamp >= 对应maker order的timestamp
+*   4. (假设已满足) 吃单数量 <= 当前lob的剩余挂单数量
+*   5. (假设已满足) 没有pending的相同maker_id的cancel order
+*
+* - CANCEL订单(撤单)可以立即执行当且仅当:
+*   1. (需要检查)   对应的maker_id 在lob中存在
+*   2. (需要检查)   目标订单价确认在当前lob本方价格中
+*   3. (假设已满足) timestamp >= 对应maker order的timestamp
+*   4. (需要检查)   撤单数量 >= 当前lob的剩余挂单数量 (保证成交已经完成)
+
+=========================================================================================
+* implementation-2(deduction based):
+* - MAKER订单(挂单)立即执行:
+*   1. 大概率对应maker_id 在lob中不存在, 那么创建对应PriceLevel和挂单
+*   2. 因为乱序, 小概率已经存在挂单量为负的挂单(吃单或撤单), 此时order订单不是taker或者cancel id, 
+*      而是对应的maker_id, 此时如综合挂单量为0, 则直接清除此订单
+*   3. 维护 PriceLevel 的总剩余订单量
+* - TAKER订单(吃单)立即执行:
+*   1. 大概率maker单已经存在, 正常吃单, 如果执行后挂单量为0, 则直接清除此订单
+*   2. 因为乱序, 小概率maker单不存在, 此时根据maker id创建订单, 挂单量设置为负
+*   3. 维护 PriceLevel 的总剩余订单量
+* - CANCEL订单(撤单)立即执行:
+*   1. 大概率maker单已经存在, 正常撤单, 如果执行后挂单量为0, 则直接清除此订单
+*   2. 因为乱序, 小概率maker单不存在, 此时根据maker id创建订单, 挂单量设置为负
+*   3. 维护 PriceLevel 的总剩余订单量
+* - 动态跟踪bid ask的top of book:
+*   1. 因为有乱序问题, bid ask level交界处, 可能出现正负挂单量交替的混乱地带
+*   2. 我们不尝试找到当前真正的TOB, 但是知道(不需要维护, 只是定义)TOB的上下界, 并认为真实TOB在上下界之间
+*   3. ask TOB(上界)被定义为从高价到低价, 第一个卖方(负)挂单前的level(只是定义, 不需要实现)
+*   4. bid TOB(下界)被定义为从低价到高价, 第一个买方(正)挂单前的level(只是定义, 不需要实现)
+*   5. 真实ask TOB被定义为最近的主动成交的买方taker单对手价格(维护简单, 如果吃空对手maker, 则自动向远离mid price的price level顺延)
+*   6. 真实bid TOB被定义为最近的主动成交的卖方taker单对手价格(维护简单, 如果吃空对手maker, 则自动向远离mid price的price level顺延)
+*   7. 我们不假设ask TOB和bid TOB的高低关系, 这样易于维护, 并且99%的时间TOB都是准确的(乱序时间很短)

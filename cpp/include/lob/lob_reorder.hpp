@@ -13,44 +13,14 @@
 #include <unordered_map>
 #include <vector>
 
-/**
- * this is a taker driven model that does not try to determine matching sequence by itself, but use maker id info in taker order directly
- *
- * 最大威胁:
- * 1. 同一ms内(甚至不同时刻间), order之间可能为乱序
- * 2. order信息可能丢失
- * 3. snapshot数据为异步 (对于沪深两市, 快照的时间点不确定, 并不是0ms对齐的, 这意味着快照只能作为大规模偏移后的模糊矫正)
- *
- * implementation:
- *
- * - MAKER订单(挂单)可以立即执行当且仅当:
- *   1. (假设已满足) 对应的maker_id 在lob中不存在
- *   2. (需要检查)   目标订单价确认在当前lob本方价格中 (交易所会自动将对手方maker单拆分为taker+maker, 但是不保证行情顺序)
- *   3. (假设已满足) timestamp >= last_processed_timestamp
- *   4. (假设已满足) volume > 0
- *
- * - TAKER订单(吃单)可以立即执行当且仅当:
- *   1. (需要检查)   对应的maker_id 在lob中存在
- *   2. (需要检查)   目标订单价确认在当前lob对手价格中
- *   3. (假设已满足) timestamp >= 对应maker order的timestamp
- *   4. (假设已满足) 吃单数量 <= 当前lob的剩余挂单数量
- *   5. (假设已满足) 没有pending的相同maker_id的cancel order
- *
- * - CANCEL订单(撤单)可以立即执行当且仅当:
- *   1. (需要检查)   对应的maker_id 在lob中存在
- *   2. (需要检查)   目标订单价确认在当前lob本方价格中
- *   3. (假设已满足) timestamp >= 对应maker order的timestamp
- *   4. (需要检查)   撤单数量 >= 当前lob的剩余挂单数量 (保证成交已经完成)
- */
-
 namespace lob {
 
 // Performance configuration parameters
 namespace Config {
 // Hash table optimization for millions of orders
 static constexpr size_t EXPECTED_TOTAL_ORDERS = 100000; // Peak active orders (1M)
-static constexpr size_t EXPECTED_PRICE_LEVELS = 100;   // Expected bid/ask levels per side
-static constexpr size_t EXPECTED_QUEUE_ORDERS = 64;    // Initial reservation per level
+static constexpr size_t EXPECTED_PRICE_LEVELS = 100;    // Expected bid/ask levels per side
+static constexpr size_t EXPECTED_QUEUE_ORDERS = 64;     // Initial reservation per level
 
 static constexpr size_t HASH_TABLE_BUCKETS = 33554432; // 32M buckets for ultra-low collision rate
 static constexpr float HASH_LOAD_FACTOR = 0.3f;        // Keep load factor low for speed
@@ -241,13 +211,15 @@ private:
 
 public:
   // Main processing interface
-
   [[gnu::hot]] bool process_order(const L2::Order &order) {
     // Update current time tracking
     current_hour = order.hour;
     current_minute = order.minute;
     current_second = order.second;
     current_millisecond = order.millisecond;
+
+    std::cout << "Type:" << static_cast<int>(order.order_type) << " Dir:" << static_cast<int>(order.order_dir) << " Price:" << order.price << " Vol:" << order.volume << " Bid:" << order.bid_order_id << " Ask:" << order.ask_order_id << "\n";
+    check_and_print_best_level_changes();
 
     bool result = false;
     switch (order.order_type) {
@@ -265,7 +237,6 @@ public:
     }
 
     if (result) {
-      check_and_print_best_level_changes();
     }
 
     return result;
@@ -323,7 +294,7 @@ public:
 
     if (changed) {
       print_market_depth();
-      print_pool_debug_info();
+      // print_pool_debug_info();
     }
   }
 
@@ -379,10 +350,10 @@ public:
   // Debug function to print memory pool statistics
   void print_pool_debug_info() const {
     auto pool_stats = entry_pool_.get_memory_stats();
-    std::cout << "  [POOL DEBUG] Entry pool: " << pool_stats.total_used << "/" << pool_stats.total_allocated 
+    std::cout << "  [POOL DEBUG] Entry pool: " << pool_stats.total_used << "/" << pool_stats.total_allocated
               << " (" << std::fixed << std::setprecision(1) << pool_stats.utilization_rate * 100 << "%) | "
-              << "Lookup size: " << order_lookup.size() << " | "
-              << "Lookup buckets: " << order_lookup.bucket_count() << " | "
+              << "lookup_ size: " << order_lookup.size() << " | "
+              << "lookup_ buckets: " << order_lookup.bucket_count() << " | "
               << "Total levels: " << (bid_levels.size() + ask_levels.size()) << "\n";
   }
 
@@ -419,9 +390,9 @@ public:
   // Management interface
 
   void clear_all() {
-    // Clear order lookup first to ensure no dangling references
+    // Clear order lookup_ first to ensure no dangling references
     order_lookup.clear();
-    
+
     // Clear price level containers (which contain pointers to pool objects)
     bid_levels.clear();
     ask_levels.clear();
@@ -445,13 +416,13 @@ private:
 
   using LookupResult = std::pair<bool, std::pmr::unordered_map<OrderId, OrderLocation>::const_iterator>;
 
-  // Order validation with hash lookup
+  // Order validation with hash lookup_
   [[gnu::hot]] LookupResult validate_and_lookup(const L2::Order &order) const {
     const bool is_bid = (order.order_dir == OrderDirection::BID);
     const bool opposing_side = (order.order_type == OrderType::TAKER);
     const OrderId maker_id = extract_maker_id(order, opposing_side);
 
-    // Single hash lookup - most critical performance bottleneck
+    // Single hash lookup_ - most critical performance bottleneck
     auto it = order_lookup.find(maker_id);
 
     // Validate existence rules with branch prediction hints
@@ -561,8 +532,6 @@ private:
     }
   }
 
-
-
   // Extract maker ID based on order direction and type
   [[gnu::hot]] OrderId extract_maker_id(const L2::Order &order, bool opposing_side = false) const {
     const bool is_bid = (order.order_dir == OrderDirection::BID);
@@ -584,7 +553,9 @@ private:
 
     auto [is_valid, lookup_iter] = validate_and_lookup(order);
     if (!is_valid) [[unlikely]]
-      return false;
+      std::cout << "  [ERROR] Invalid order: " << order.price << "\n";
+    exit(1);
+    return false;
 
     const bool is_bid = (order.order_dir == OrderDirection::BID);
     const OrderId maker_id = extract_maker_id(order);
@@ -606,7 +577,7 @@ private:
     const size_t order_index = level.orders.size();
     level.orders.push_back(new_order);
 
-    // Store location for lookup
+    // Store location for lookup_
     order_lookup.emplace(maker_id, OrderLocation(order.price, new_order, level_index, order_index, is_bid));
 
     // Invalidate relevant caches
@@ -635,7 +606,7 @@ private:
     const size_t level_index = lookup_iter->second.level_index;
     const size_t order_index = lookup_iter->second.order_index;
     const bool is_bid = lookup_iter->second.is_bid;
-    
+
     order_lookup.erase(lookup_iter);
     remove_order_from_level(level_index, order_index, is_bid);
     return true;
@@ -657,7 +628,7 @@ private:
       const size_t level_index = location.level_index;
       const size_t order_index = location.order_index;
       const bool is_bid = location.is_bid;
-      
+
       order_lookup.erase(lookup_iter);
       remove_order_from_level(level_index, order_index, is_bid);
     } else {

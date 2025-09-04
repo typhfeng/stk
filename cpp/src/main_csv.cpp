@@ -1,6 +1,6 @@
+#include "codec/L2_DataType.hpp"
 #include "codec/binary_decoder_L2.hpp"
 #include "codec/binary_encoder_L2.hpp"
-#include "codec/L2_DataType.hpp"
 #include "codec/json_config.hpp"
 #include "misc/affinity.hpp"
 #include "misc/misc.hpp"
@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include "lob/lob.hpp"
+#include "lob/lob_deduct.hpp"
 
 // this mode is for debugging without preparing the whole L2 binary database
 // instead of binary, we parse data directly from csv, encode them, then decode them (so we can follow standard flow without rewriting)
@@ -29,7 +29,6 @@
 
 // Configuration constants
 namespace Config {
-
 
 constexpr const char *BIN_EXTENSION = ".bin";
 constexpr const char *SEVEN_ZIP_CMD = "7z";
@@ -152,8 +151,9 @@ public:
       // exit(1);
       if (book) {
         for (const auto &ord : decoded_orders) {
-          book->process_order(ord);
+          book->process(ord);
         }
+        book->clear();
       }
     }
 
@@ -411,10 +411,7 @@ void ProcessAsset(const std::string &asset_code, const JsonConfig::StockInfo &st
     misc::print_progress(current_date_index + 1, dates.size(), "Processing " + asset_code + " - " + date_str);
     if (AssetProcessor::process_asset_day_csv(asset_code, date_str, temp_base, l2_archive_base, encoder, decoder, book)) {
       processed_days++;
-      std::cout << "  Processed: " << date_str << " (day " << processed_days << ")\n";
-
-      // End of day: reset order book
-      book.clear_all();
+      // std::cout << "  Processed: " << date_str << " (day " << processed_days << ")\n";
 
       // Optionally clean up day-specific temp files to save disk space
       // const std::string day_temp_dir = PathUtils::generate_temp_asset_dir(temp_base, date_str, asset_code);

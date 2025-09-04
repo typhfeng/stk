@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <memory>
 #include <type_traits>
 #include <vector>
 
@@ -73,8 +72,8 @@ private:
     return std::max(size_t{1}, Config::CACHE_LINE_SIZE / sizeof(T));
   }
 
-  // Single continuous memory allocation
-  std::unique_ptr<T[]> data_;
+  // Raw memory allocation
+  T *data_;
   size_t capacity_;
   size_t used_;
 
@@ -85,8 +84,10 @@ public:
 
   explicit MemoryPool(size_t initial_size = Config::DEFAULT_POOL_SIZE)
       : capacity_(initial_size), used_(0) {
-    // Allocate aligned memory for optimal cache performance
-    data_ = std::unique_ptr<T[]>(new (std::align_val_t{Config::CACHE_LINE_SIZE}) T[capacity_]);
+    // Allocate raw aligned memory - no object construction
+    size_t bytes = capacity_ * sizeof(T);
+    void *raw = operator new[](bytes, std::align_val_t{Config::CACHE_LINE_SIZE});
+    data_ = static_cast<T *>(raw);
   }
 
   // ========================================================================
@@ -145,11 +146,29 @@ public:
     used_ = 0;
   }
 
+  // Destructor to handle raw memory
+  ~MemoryPool() {
+    if (data_) {
+      operator delete[](data_, std::align_val_t{Config::CACHE_LINE_SIZE});
+    }
+  }
+
+  // Disable copy/move to prevent memory management issues
+  MemoryPool(const MemoryPool &) = delete;
+  MemoryPool &operator=(const MemoryPool &) = delete;
+  MemoryPool(MemoryPool &&) = delete;
+  MemoryPool &operator=(MemoryPool &&) = delete;
+
   // Clear all memory
   void clear() {
     reset();
+    if (data_) {
+      operator delete[](data_, std::align_val_t{Config::CACHE_LINE_SIZE});
+    }
     capacity_ = Config::DEFAULT_POOL_SIZE;
-    data_ = std::unique_ptr<T[]>(new (std::align_val_t{Config::CACHE_LINE_SIZE}) T[capacity_]);
+    size_t bytes = capacity_ * sizeof(T);
+    void *raw = operator new[](bytes, std::align_val_t{Config::CACHE_LINE_SIZE});
+    data_ = static_cast<T *>(raw);
   }
 
   // ========================================================================
@@ -176,7 +195,7 @@ public:
 
   // Check if pointer belongs to this pool
   bool owns(const T *ptr) const {
-    const T *start = data_.get();
+    const T *start = data_;
     const T *end = start + capacity_;
     return ptr >= start && ptr < end;
   }
@@ -249,7 +268,7 @@ public:
   [[gnu::hot]] bool insert(const Key &key, const Value &value) {
     const size_t hash_value = hasher_(key);
 
-    // Multi-level hash lookup
+    // Multi-level hash lookup_
     for (auto &level : levels_) {
       const size_t bucket_idx = (hash_value >> level.hash_shift) % level.bucket_count;
       Entry *entry = level.buckets[bucket_idx];
@@ -282,7 +301,7 @@ public:
     return false;
   }
 
-  // Ultra-fast lookup with multi-level hashing
+  // Ultra-fast lookup_ with multi-level hashing
   [[gnu::hot]] Value *find(const Key &key) {
     const size_t hash_value = hasher_(key);
 
