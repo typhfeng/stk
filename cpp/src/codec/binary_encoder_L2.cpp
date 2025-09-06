@@ -472,7 +472,17 @@ Order BinaryEncoder_L2::csv_to_trade(const CSVTrade &csv_trade) {
 
   bool is_szse = is_szse_market(csv_trade.stock_code);
   order.order_type = BitwidthBounds::clamp_to_bound(determine_order_type('0', csv_trade.trade_code, true, is_szse), BitwidthBounds::ORDER_TYPE_BOUND);
-  order.order_dir = BitwidthBounds::clamp_to_bound(determine_order_direction(csv_trade.bs_flag), BitwidthBounds::ORDER_DIR_BOUND);
+  
+  // For SZSE cancellation (BS flag is null/empty), determine direction from bid_order_id
+  // null:撤单(bid_id!=0:B:S) - if bid_id != 0 then B, else S
+  if (is_szse && (csv_trade.bs_flag == ' ' || csv_trade.bs_flag == '\0')) {
+    // For SZSE cancellation: if bid_order_id != 0, it's a buy side cancellation (B), else sell side (S)
+    char effective_bs_flag = (csv_trade.bid_order_id != 0) ? 'B' : 'S';
+    order.order_dir = BitwidthBounds::clamp_to_bound(determine_order_direction(effective_bs_flag), BitwidthBounds::ORDER_DIR_BOUND);
+  } else {
+    order.order_dir = BitwidthBounds::clamp_to_bound(determine_order_direction(csv_trade.bs_flag), BitwidthBounds::ORDER_DIR_BOUND);
+  }
+  
   order.price = BitwidthBounds::clamp_to_bound(csv_trade.price, BitwidthBounds::PRICE_BOUND);
   order.volume = BitwidthBounds::clamp_to_bound(csv_trade.volume, BitwidthBounds::VOLUME_BOUND);
 

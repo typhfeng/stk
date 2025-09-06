@@ -20,7 +20,7 @@
         - 深交所:
             - 成交代码: 0: 成交 C: 撤单
             - 委托代码: 0(不使用)
-            - BS标志: B:buy S:sell null:撤单
+            - BS标志: B:buy S:sell null:撤单(bid_id!=0:B:S)
         - 上交所:
             - 成交代码: null(不使用)
             - 委托代码: null(不使用)

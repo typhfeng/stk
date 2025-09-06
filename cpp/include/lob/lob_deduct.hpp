@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include <vector>
 
+#define DEBUG_PRINT 0
+
 namespace lob {
 
 // Optimized configuration for ultra-low latency
@@ -60,11 +62,11 @@ struct alignas(8) Order {
 
 // Simple unified price level - no side field needed
 struct alignas(Config::CACHE_LINE_SIZE) Level {
-  Price price;                         // Price level identifier
-  Quantity total_visible_quantity = 0; // Cached sum of positive quantities only
-  uint16_t order_count = 0;            // Fast size tracking
-  uint16_t alignment_padding = 0;      // Explicit padding for cache line alignment
-  std::vector<Order *> orders;         // Pointers to orders at this price level
+  Price price;                    // Price level identifier
+  Quantity net_quantity = 0;      // Cached sum of all quantities (can be negative)
+  uint16_t order_count = 0;       // Fast size tracking
+  uint16_t alignment_padding = 0; // Explicit padding for cache line alignment
+  std::vector<Order *> orders;    // Pointers to orders at this price level
 
   explicit Level(Price p) : price(p) {
     orders.reserve(Config::EXPECTED_QUEUE_SIZE);
@@ -74,9 +76,7 @@ struct alignas(Config::CACHE_LINE_SIZE) Level {
   [[gnu::hot]] void add(Order *order) {
     orders.push_back(order);
     ++order_count;
-    if (order->is_positive()) {
-      total_visible_quantity += order->qty;
-    }
+    net_quantity += order->qty;
   }
 
   [[gnu::hot]] void remove(size_t order_index) {
@@ -84,9 +84,7 @@ struct alignas(Config::CACHE_LINE_SIZE) Level {
     Order *removed_order = orders[order_index];
 
     // Update cached total before removal
-    if (removed_order->is_positive()) {
-      total_visible_quantity -= removed_order->qty;
-    }
+    net_quantity -= removed_order->qty;
 
     // Swap-and-pop for O(1) removal
     if (order_index != orders.size() - 1) {
@@ -98,15 +96,13 @@ struct alignas(Config::CACHE_LINE_SIZE) Level {
 
   // Fast level state queries
   bool empty() const { return order_count == 0; }
-  bool has_visible_quantity() const { return total_visible_quantity > 0; }
+  bool has_visible_quantity() const { return net_quantity != 0; }
 
   // Recalculate cached total from scratch
   void refresh_total() {
-    total_visible_quantity = 0;
+    net_quantity = 0;
     for (const Order *current_order : orders) {
-      if (current_order->is_positive()) {
-        total_visible_quantity += current_order->qty;
-      }
+      net_quantity += current_order->qty;
     }
   }
 };
@@ -243,64 +239,57 @@ private:
     return visible_prices_.empty() ? 0 : *visible_prices_.rbegin();
   }
 
-  // Dynamic side judgment based on current TOB
-  [[gnu::hot]] uint8_t judge_side(Price price) const {
-    update_tob(); // Ensure TOB is current
+  // judge_side removed: side is not inferred/used in processing
 
-    if (best_bid_price_ == 0 && best_ask_price_ == 0) {
-      // No market yet - can't judge, will be determined by order direction
-      return OrderDirection::BID; // Default fallback
-    }
+  // Simplified unified volume calculation
+  [[gnu::hot]] Quantity get_signed_volume(const L2::Order &order) const {
+    const bool is_bid = (order.order_dir == OrderDirection::BID);
 
-    if (best_bid_price_ > 0 && price >= best_bid_price_) {
-      return OrderDirection::BID;
+    switch (order.order_type) {
+    case OrderType::MAKER:
+      return is_bid ? +order.volume : -order.volume;
+    case OrderType::CANCEL:
+      return is_bid ? -order.volume : +order.volume;
+    case OrderType::TAKER:
+      return is_bid ? +order.volume : -order.volume;
+    default:
+      return 0;
     }
-    if (best_ask_price_ > 0 && price <= best_ask_price_) {
-      return OrderDirection::ASK;
-    }
-
-    // In between or unknown - closer to which side?
-    if (best_bid_price_ > 0 && best_ask_price_ > 0) {
-      Price mid = (best_bid_price_ + best_ask_price_) / 2;
-      return price >= mid ? OrderDirection::BID : OrderDirection::ASK;
-    }
-
-    // Only one side exists
-    return best_bid_price_ > 0 ? OrderDirection::BID : OrderDirection::ASK;
   }
 
-  // Deduction type enumeration
-  enum class DeductionType : int {
-    CANCEL = 0,
-    TAKER = 1
-  };
+  // Simplified unified target ID lookup
+  [[gnu::hot]] OrderId get_target_id(const L2::Order &order) const {
+    const bool is_bid = (order.order_dir == OrderDirection::BID);
 
-  // Simple deduction logic
-  template <DeductionType Type>
-  [[gnu::hot]] bool deduct(const L2::Order &order) {
-    const bool is_bid_order = (order.order_dir == OrderDirection::BID);
+    switch (order.order_type) {
+    case OrderType::MAKER:
+      return is_bid ? order.bid_order_id : order.ask_order_id;
+    case OrderType::CANCEL:
+      return is_bid ? order.bid_order_id : order.ask_order_id;
+    case OrderType::TAKER:
+      return is_bid ? order.ask_order_id : order.bid_order_id;
+    default:
+      return 0;
+    }
+  }
 
-    // Determine target order ID
-    const OrderId target_order_id = (Type == DeductionType::CANCEL)
-                                        ? (is_bid_order ? order.bid_order_id : order.ask_order_id)
-                                        : (is_bid_order ? order.ask_order_id : order.bid_order_id);
-
-    auto order_lookup_iterator = order_lookup_.find(target_order_id);
+  // Unified order processing core logic
+  [[gnu::hot]] bool apply_volume_change(OrderId target_id, Price price, Quantity signed_volume) {
+    auto order_lookup_iterator = order_lookup_.find(target_id);
 
     if (order_lookup_iterator != order_lookup_.end()) {
-      // Order exists - perform deduction
+      // Order exists - modify it
       Level *target_level = order_lookup_iterator->second.level;
       size_t order_index = order_lookup_iterator->second.index;
       Order *target_order = target_level->orders[order_index];
-      const Price counterparty_price = target_level->price;
 
-      // Apply deduction with O(1) delta update
+      // Apply signed volume change
       const Quantity old_qty = target_order->qty;
-      const Quantity dec = static_cast<Quantity>(order.volume);
-      const Quantity new_qty = old_qty - dec;
-      target_order->qty = new_qty;
+      const Quantity new_qty = old_qty + signed_volume;
 
-      if (new_qty <= 0) {
+      if (new_qty == 0) {
+        // std::cout << "Order fully consumed: " << target_id << " at price: " << price << " with volume: " << signed_volume << std::endl;
+
         // Order fully consumed - remove completely
         target_level->remove(order_index);
         order_lookup_.erase(order_lookup_iterator);
@@ -313,160 +302,66 @@ private:
           }
         }
 
-        // On taker events, advance TOB using visible_prices_ iterators
-        if constexpr (Type == DeductionType::TAKER) {
-          auto it = visible_prices_.find(counterparty_price);
-          // Remove the just-emptied price from visible set
-          if (it != visible_prices_.end()) {
-            auto next_it = it;
-            auto prev_it = it;
-            bool has_next = (++next_it != visible_prices_.end());
-            bool has_prev = (it != visible_prices_.begin() && (--prev_it, true));
-            visible_prices_.erase(it);
-
-            if (is_bid_order) {
-              // 买方taker：推进 ask 到更高价
-              best_ask_price_ = has_next ? *next_it : 0;
-            } else {
-              // 卖方taker：推进 bid 到更低价
-              best_bid_price_ = has_prev ? *prev_it : 0;
-            }
-          } else {
-            // Fallback if the price was not in visible set
-            if (is_bid_order) {
-              best_ask_price_ = next_ask_above(counterparty_price);
-            } else {
-              best_bid_price_ = next_bid_below(counterparty_price);
-            }
-          }
-
-          // Now remove empty level (visible already updated)
-          remove_level(target_level, /*erase_visible=*/false);
-          tob_invalid_ = false;
+        // Handle level cleanup and TOB updates
+        if (target_level->empty()) {
+          remove_level(target_level);
         } else {
-          // Non-taker path: just cleanup level and maintain visibility
-          if (target_level->empty()) {
-            remove_level(target_level);
-          } else {
-            update_visible_price(target_level);
-          }
+          update_visible_price(target_level);
         }
+
+        return true; // Fully consumed
       } else {
-        // Partial deduction - delta update totals
-        const Quantity visible_before = old_qty > 0 ? old_qty : 0;
-        const Quantity visible_after = new_qty > 0 ? new_qty : 0;
-        target_level->total_visible_quantity += (visible_after - visible_before);
+        // Partial update
+        target_level->net_quantity += signed_volume;
+        target_order->qty = new_qty;
         update_visible_price(target_level);
-        if constexpr (Type == DeductionType::TAKER) {
-          if (is_bid_order) {
-            best_ask_price_ = counterparty_price;
-          } else {
-            best_bid_price_ = counterparty_price;
-          }
-          tob_invalid_ = false;
-        }
+
+        return false; // Partially consumed
       }
 
     } else {
-      // Out-of-order processing: create negative quantity placeholder
-      Order *negative_order = order_memory_pool_.construct(-static_cast<Quantity>(order.volume), target_order_id);
-      if (!negative_order)
+      // Order doesn't exist - create placeholder
+      Order *new_order = order_memory_pool_.construct(signed_volume, target_id);
+      if (!new_order)
         return false;
 
-      // Simply place at the order's price - don't need to guess side
-      Level *target_level = find_level(order.price);
+      Level *target_level = find_level(price);
       if (!target_level) {
-        target_level = create_level(order.price);
+        target_level = create_level(price);
       }
 
       size_t new_order_index = target_level->orders.size();
-      target_level->add(negative_order);
-      order_lookup_.emplace(target_order_id, Location(target_level, new_order_index));
+      target_level->add(new_order);
+      order_lookup_.emplace(target_id, Location(target_level, new_order_index));
       update_visible_price(target_level);
 
-      // On taker events with missing maker, use provided price as TOB estimate
-      if constexpr (Type == DeductionType::TAKER) {
-        if (is_bid_order) {
-          best_ask_price_ = order.price;
-        } else {
-          best_bid_price_ = order.price;
-        }
-        tob_invalid_ = false;
-      }
+      return false; // New order created
     }
-
-    return true;
   }
 
-  // Simple maker order processing
-  [[gnu::hot]] bool add_maker_fast(const L2::Order &order) {
-    if (order.volume == 0) [[unlikely]]
-      return false;
-
+  // TOB update logic for taker orders
+  [[gnu::hot]] void update_tob_after_trade(const L2::Order &order, bool was_fully_consumed, Price trade_price) {
     const bool is_bid_order = (order.order_dir == OrderDirection::BID);
-    const OrderId order_id = is_bid_order ? order.bid_order_id : order.ask_order_id;
 
-    auto existing_order_lookup = order_lookup_.find(order_id);
-
-    if (existing_order_lookup == order_lookup_.end()) [[likely]] {
-      // Fast path: completely new order
-      Order *new_order = order_memory_pool_.construct(order.volume, order_id);
-      if (!new_order) [[unlikely]]
-        return false;
-
-      Level *price_level = find_level(order.price);
-      if (!price_level) {
-        price_level = create_level(order.price);
-      }
-
-      size_t order_index = price_level->orders.size();
-      price_level->add(new_order);
-      order_lookup_.emplace(order_id, Location(price_level, order_index));
-      update_visible_price(price_level);
-
-      // print_book();
-
-      return true;
-
-    } else {
-      // Merge with existing negative order (out-of-order scenario)
-      Level *existing_level = existing_order_lookup->second.level;
-      Order *existing_order = existing_level->orders[existing_order_lookup->second.index];
-
-      // Merge with O(1) delta update
-      const Quantity old_qty_merge = existing_order->qty;
-      const Quantity inc = static_cast<Quantity>(order.volume);
-      existing_order->qty = old_qty_merge + inc;
-
-      if (existing_order->qty == 0) {
-        // Order completely cancelled out - remove from book
-        existing_level->remove(existing_order_lookup->second.index);
-        order_lookup_.erase(existing_order_lookup);
-
-        // Update lookup index for swapped order
-        if (existing_order_lookup->second.index < existing_level->orders.size()) {
-          auto swapped_order_lookup = order_lookup_.find(existing_level->orders[existing_order_lookup->second.index]->id);
-          if (swapped_order_lookup != order_lookup_.end()) {
-            swapped_order_lookup->second.index = existing_order_lookup->second.index;
-          }
-        }
-
-        // Remove empty levels
-        if (existing_level->empty()) {
-          remove_level(existing_level);
-        } else {
-          update_visible_price(existing_level);
-        }
+    if (was_fully_consumed) {
+      // Level was emptied - advance TOB
+      if (is_bid_order) {
+        // Buy taker consumed ask - advance ask to higher price
+        best_ask_price_ = next_ask_above(trade_price);
       } else {
-        // Delta update totals
-        const Quantity visible_before = old_qty_merge > 0 ? old_qty_merge : 0;
-        const Quantity visible_after = existing_order->qty > 0 ? existing_order->qty : 0;
-        existing_level->total_visible_quantity += (visible_after - visible_before);
-        update_visible_price(existing_level);
+        // Sell taker consumed bid - advance bid to lower price
+        best_bid_price_ = next_bid_below(trade_price);
       }
-
-      return true;
+    } else {
+      // Partial fill - TOB stays at this price
+      if (is_bid_order) {
+        best_ask_price_ = trade_price;
+      } else {
+        best_bid_price_ = trade_price;
+      }
     }
+
+    tob_invalid_ = false;
   }
 
 public:
@@ -474,21 +369,34 @@ public:
   // PUBLIC INTERFACE
   // ========================================================================================
 
-  // Main order processing entry point
+  // Main order processing entry point - now uses unified approach
   [[gnu::hot]] bool process(const L2::Order &order) {
-    // Pack timestamp
+
     current_timestamp_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
 
-    switch (order.order_type) {
-    case OrderType::MAKER:
-      return add_maker_fast(order);
-    case OrderType::CANCEL:
-      return deduct<DeductionType::CANCEL>(order);
-    case OrderType::TAKER:
-      return deduct<DeductionType::TAKER>(order);
-    default:
+#if DEBUG_PRINT
+    char order_type_char = (order.order_type == OrderType::MAKER) ? 'M' : (order.order_type == OrderType::CANCEL) ? 'C'
+                                                                                                                  : 'T';
+    char order_dir_char = (order.order_dir == OrderDirection::BID) ? 'B' : 'S';
+    std::cout << "process order: " << order_type_char << " " << order_dir_char << " at price: " << order.price << " with volume: " << order.volume << std::endl;
+#endif
+
+    // 1. Get signed volume and target ID using simple lookup functions
+    Quantity signed_volume = get_signed_volume(order);
+    OrderId target_id = get_target_id(order);
+
+    if (signed_volume == 0 || target_id == 0) [[unlikely]]
       return false;
+
+    // 2. Apply volume change using shared logic
+    bool was_fully_consumed = apply_volume_change(target_id, order.price, signed_volume);
+
+    // 3. Order-type specific post-processing
+    if (order.order_type == OrderType::TAKER) {
+      update_tob_after_trade(order, was_fully_consumed, order.price);
     }
+
+    return true;
   }
 
   // ========================================================================================
@@ -514,7 +422,7 @@ public:
       return 0;
 
     Level *level = find_level(best_bid_price_);
-    return level ? level->total_visible_quantity : 0;
+    return level ? level->net_quantity : 0;
   }
 
   // Get best ask quantity
@@ -524,7 +432,7 @@ public:
       return 0;
 
     Level *level = find_level(best_ask_price_);
-    return level ? level->total_visible_quantity : 0;
+    return level ? level->net_quantity : 0;
   }
 
   // Calculate bid-ask spread
@@ -542,8 +450,8 @@ public:
     std::ostringstream book_output;
     book_output << "[" << format_time() << "] ";
 
-    constexpr size_t MAX_DISPLAY_LEVELS = 10;
-    constexpr size_t LEVEL_WIDTH = 12;
+    constexpr size_t MAX_DISPLAY_LEVELS = 20;
+    constexpr size_t LEVEL_WIDTH = 10;
 
     update_tob();
 
@@ -637,7 +545,7 @@ public:
     for (const auto &[price, level] : bid_levels) {
       if (levels_processed >= max_levels)
         break;
-      callback_function(price, level->total_visible_quantity);
+      callback_function(price, level->net_quantity);
       ++levels_processed;
     }
   }
@@ -668,7 +576,7 @@ public:
     for (const auto &[price, level] : ask_levels) {
       if (levels_processed >= max_levels)
         break;
-      callback_function(price, level->total_visible_quantity);
+      callback_function(price, level->net_quantity);
       ++levels_processed;
     }
   }
