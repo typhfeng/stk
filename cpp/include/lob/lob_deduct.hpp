@@ -14,7 +14,9 @@
 #include <unordered_map>
 #include <vector>
 
-#define DEBUG_PRINT 0
+#define PRINT_DEBUG 0
+#define PRINT_BOOK 0
+#define SINGLE_DAY 0
 
 namespace lob {
 
@@ -145,7 +147,9 @@ private:
   mem_pool::MemoryPool<Order> order_memory_pool_;
 
   // Market timestamp tracking
-  uint32_t current_timestamp_ = 0;
+  uint32_t prev_timestamp_ = 0;
+  uint32_t curr_timestamp_ = 0;
+  bool is_new_timestamp_ = false;
 
 public:
   // ========================================================================================
@@ -273,9 +277,9 @@ private:
     }
   }
 
-  // Unified order processing core logic
-  [[gnu::hot]] bool apply_volume_change(OrderId target_id, Price price, Quantity signed_volume) {
-    auto order_lookup_iterator = order_lookup_.find(target_id);
+  // Unified order processing core logic - now accepts lookup iterator from caller
+  [[gnu::hot]] bool apply_volume_change(OrderId target_id, Price price, Quantity signed_volume,
+                                        decltype(order_lookup_.find(target_id)) order_lookup_iterator) {
 
     if (order_lookup_iterator != order_lookup_.end()) {
       // Order exists - modify it
@@ -369,16 +373,19 @@ public:
   // PUBLIC INTERFACE
   // ========================================================================================
 
-  // Main order processing entry point - now uses unified approach
+  // Main order processing entry point - with zero price handling and pending order logic
   [[gnu::hot]] bool process(const L2::Order &order) {
 
-    current_timestamp_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
+    curr_timestamp_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
+    is_new_timestamp_ = curr_timestamp_ != prev_timestamp_;
+    prev_timestamp_ = curr_timestamp_;
+    print_book();
 
-#if DEBUG_PRINT
+#if PRINT_DEBUG
     char order_type_char = (order.order_type == OrderType::MAKER) ? 'M' : (order.order_type == OrderType::CANCEL) ? 'C'
                                                                                                                   : 'T';
     char order_dir_char = (order.order_dir == OrderDirection::BID) ? 'B' : 'S';
-    std::cout << "process order: " << order_type_char << " " << order_dir_char << " at price: " << order.price << " with volume: " << order.volume << std::endl;
+    std::cout << "[" << format_time() << "] " << " ID: " << get_target_id(order) << " Type: " << order_type_char << " Direction: " << order_dir_char << " Price: " << order.price << " Volume: " << order.volume << std::endl;
 #endif
 
     // 1. Get signed volume and target ID using simple lookup functions
@@ -388,12 +395,28 @@ public:
     if (signed_volume == 0 || target_id == 0) [[unlikely]]
       return false;
 
-    // 2. Apply volume change using shared logic
-    bool was_fully_consumed = apply_volume_change(target_id, order.price, signed_volume);
+    // 2. Perform lookup for the incoming order
+    auto order_lookup_iterator = order_lookup_.find(target_id);
+    Price effective_price = order.price;
 
-    // 3. Order-type specific post-processing
+    // 3. Handle zero price case - strategically ignore if not found
+    if (order.price == 0) {
+      if (order_lookup_iterator != order_lookup_.end()) {
+        // Found target, use its price
+        effective_price = order_lookup_iterator->second.level->price;
+      } else {
+        // only very few out-of-order orders will get here (it is not worth it to implement a pending orders mechanism)
+        // use snapshots to synchronize
+        return true; // ignored
+      }
+    }
+
+    // 4. Process order normally (either non-zero price or resolved zero price)
+    bool was_fully_consumed = apply_volume_change(target_id, effective_price, signed_volume, order_lookup_iterator);
+
+    // 5. Order-type specific post-processing
     if (order.order_type == OrderType::TAKER) {
-      update_tob_after_trade(order, was_fully_consumed, order.price);
+      update_tob_after_trade(order, was_fully_consumed, effective_price);
     }
 
     return true;
@@ -447,58 +470,60 @@ public:
 
   // Display current market depth
   void print_book() const {
-    std::ostringstream book_output;
-    book_output << "[" << format_time() << "] ";
+    if (is_new_timestamp_ && PRINT_BOOK) {
+      std::ostringstream book_output;
+      book_output << "[" << format_time() << "] ";
 
-    constexpr size_t MAX_DISPLAY_LEVELS = 20;
-    constexpr size_t LEVEL_WIDTH = 10;
+      constexpr size_t MAX_DISPLAY_LEVELS = 20;
+      constexpr size_t LEVEL_WIDTH = 10;
 
-    update_tob();
+      update_tob();
 
-    // Collect ask levels (price <= best_ask or no clear TOB)
-    std::vector<std::pair<Price, Quantity>> ask_data;
-    for_each_visible_ask([&](Price price, Quantity quantity) {
-      ask_data.emplace_back(price, quantity);
-    },
-                         MAX_DISPLAY_LEVELS);
+      // Collect ask levels (price <= best_ask or no clear TOB)
+      std::vector<std::pair<Price, Quantity>> ask_data;
+      for_each_visible_ask([&](Price price, Quantity quantity) {
+        ask_data.emplace_back(price, quantity);
+      },
+                           MAX_DISPLAY_LEVELS);
 
-    // Reverse ask data for display
-    std::reverse(ask_data.begin(), ask_data.end());
+      // Reverse ask data for display
+      std::reverse(ask_data.begin(), ask_data.end());
 
-    // Display ask levels
-    book_output << "ASK: ";
-    size_t ask_empty_spaces = MAX_DISPLAY_LEVELS - ask_data.size();
-    for (size_t i = 0; i < ask_empty_spaces; ++i) {
-      book_output << std::setw(LEVEL_WIDTH) << " ";
-    }
-    for (size_t i = 0; i < ask_data.size(); ++i) {
-      book_output << std::setw(LEVEL_WIDTH) << std::left
-                  << (std::to_string(ask_data[i].first) + "x" + std::to_string(ask_data[i].second));
-    }
-
-    book_output << "| BID: ";
-
-    // Collect bid levels
-    std::vector<std::pair<Price, Quantity>> bid_data;
-    for_each_visible_bid([&](Price price, Quantity quantity) {
-      bid_data.emplace_back(price, quantity);
-    },
-                         MAX_DISPLAY_LEVELS);
-
-    // Display bid levels
-    for (size_t i = 0; i < MAX_DISPLAY_LEVELS; ++i) {
-      if (i < bid_data.size()) {
-        book_output << std::setw(LEVEL_WIDTH) << std::left
-                    << (std::to_string(bid_data[i].first) + "x" + std::to_string(bid_data[i].second));
-      } else {
+      // Display ask levels
+      book_output << "ASK: ";
+      size_t ask_empty_spaces = MAX_DISPLAY_LEVELS - ask_data.size();
+      for (size_t i = 0; i < ask_empty_spaces; ++i) {
         book_output << std::setw(LEVEL_WIDTH) << " ";
       }
-    }
+      for (size_t i = 0; i < ask_data.size(); ++i) {
+        book_output << std::setw(LEVEL_WIDTH) << std::left
+                    << (std::to_string(ask_data[i].first) + "x" + std::to_string(ask_data[i].second));
+      }
 
-    std::cout << book_output.str() << "\n";
+      book_output << "| BID: ";
+
+      // Collect bid levels
+      std::vector<std::pair<Price, Quantity>> bid_data;
+      for_each_visible_bid([&](Price price, Quantity quantity) {
+        bid_data.emplace_back(price, quantity);
+      },
+                           MAX_DISPLAY_LEVELS);
+
+      // Display bid levels
+      for (size_t i = 0; i < MAX_DISPLAY_LEVELS; ++i) {
+        if (i < bid_data.size()) {
+          book_output << std::setw(LEVEL_WIDTH) << std::left
+                      << (std::to_string(bid_data[i].first) + "x" + std::to_string(bid_data[i].second));
+        } else {
+          book_output << std::setw(LEVEL_WIDTH) << " ";
+        }
+      }
+
+      std::cout << book_output.str() << "\n";
+    }
   }
 
-  // Book statistics
+  // Book statistics - optimized for performance
   size_t total_orders() const { return order_lookup_.size(); }
   size_t total_levels() const { return price_levels_.size(); }
 
@@ -511,7 +536,13 @@ public:
     visible_prices_.clear();
     best_bid_price_ = best_ask_price_ = 0;
     tob_invalid_ = true;
-    current_timestamp_ = 0;
+    curr_timestamp_ = 0;
+    prev_timestamp_ = 0;
+    is_new_timestamp_ = false;
+
+    if (SINGLE_DAY) {
+      exit(1);
+    }
   }
 
   // ========================================================================================
@@ -605,10 +636,10 @@ private:
 
   // Convert packed timestamp to human-readable format
   std::string format_time() const {
-    uint8_t hours = (current_timestamp_ >> 24) & 0xFF;
-    uint8_t minutes = (current_timestamp_ >> 16) & 0xFF;
-    uint8_t seconds = (current_timestamp_ >> 8) & 0xFF;
-    uint8_t milliseconds = current_timestamp_ & 0xFF;
+    uint8_t hours = (curr_timestamp_ >> 24) & 0xFF;
+    uint8_t minutes = (curr_timestamp_ >> 16) & 0xFF;
+    uint8_t seconds = (curr_timestamp_ >> 8) & 0xFF;
+    uint8_t milliseconds = curr_timestamp_ & 0xFF;
 
     std::ostringstream time_formatter;
     time_formatter << std::setfill('0')

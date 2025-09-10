@@ -767,11 +767,26 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
     all_orders.push_back(csv_to_trade(csv_trade));
   }
 
-  // Sort orders by time
+  // Sort orders by time, then by priority within same timestamp: maker -> taker -> cancel
   std::sort(all_orders.begin(), all_orders.end(), [](const Order &a, const Order &b) -> bool {
     uint32_t time_a = a.hour * 3600000 + a.minute * 60000 + a.second * 1000 + a.millisecond * 10;
     uint32_t time_b = b.hour * 3600000 + b.minute * 60000 + b.second * 1000 + b.millisecond * 10;
-    return time_a < time_b;
+    
+    // Primary sort: by time
+    if (time_a != time_b) {
+      return time_a < time_b;
+    }
+    
+    // Secondary sort: by order type priority (maker=0 -> taker=3 -> cancel=1)
+    // Define priority order: maker(0)=0, taker(3)=1, cancel(1)=2
+    auto get_priority = [](uint8_t order_type) -> uint8_t {
+      if (order_type == 0) return 0; // maker
+      if (order_type == 3) return 1; // taker  
+      if (order_type == 1) return 2; // cancel
+      return 3; // unknown, put at end
+    };
+    
+    return get_priority(a.order_type) < get_priority(b.order_type);
   });
 
   if (!all_orders.empty()) {

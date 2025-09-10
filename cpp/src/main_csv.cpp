@@ -152,10 +152,8 @@ public:
       if (book) {
         for (const auto &ord : decoded_orders) {
           book->process(ord);
-          book->print_book();
         }
         book->clear();
-        exit(1);
       }
     }
     return decode_success;
