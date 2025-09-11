@@ -1,9 +1,9 @@
 #include "codec/binary_decoder_L1.hpp"
+#include "define/Dtype.hpp"
 #include "misc/misc.hpp"
-#include "technical_analysis.hpp"
 
 #include <cassert>
-#include <chrono>
+// #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -20,12 +20,6 @@
 #endif
 
 namespace BinaryDecoder_L1 {
-
-// ============================================================================
-// FORWARD DECLARATIONS
-// ============================================================================
-
-// Note: CSV dumping functionality moved to technical_analysis.cpp
 
 // ============================================================================
 // CONSTRUCTOR AND DESTRUCTOR
@@ -116,69 +110,66 @@ void Decoder::ReverseDifferentialEncoding(std::vector<L1::Snapshot> &records) {
 // DATA CONVERSION FUNCTIONS
 // ============================================================================
 
-void Decoder::ProcessSnapshots(const std::vector<L1::Snapshot> &binary_records, uint16_t year, uint8_t month) {
-#ifdef DEBUG_TIMER
-  misc::Timer timer("ProcessSnapshots");
-#endif
-  if (binary_records.empty())
-    return;
-
-  Table::Snapshot_Record snapshot;
-
-  for (const auto &record : binary_records) {
-    ++records_count_;
-    misc::print_progress(records_count_, total_records_);
-
-    // Calculate time components (optimized)
-    uint16_t time_s = record.time_s;
-    uint8_t current_hour = static_cast<uint8_t>(time_s / 3600);
-    uint16_t remaining_seconds = static_cast<uint16_t>(time_s % 3600);
-    uint8_t current_minute = static_cast<uint8_t>(remaining_seconds / 60);
-    uint8_t current_second = static_cast<uint8_t>(remaining_seconds % 60);
-#ifdef PRINT_BINARY
-    std::cout << "year: " << static_cast<int>(year)
-              << ", month: " << static_cast<int>(month)
-              << ", day: " << static_cast<int>(record.day)
-              << ", hour: " << static_cast<int>(current_hour)
-              << ", minute: " << static_cast<int>(current_minute)
-              << ", second: " << static_cast<int>(current_second)
-              << ", trade_count: " << static_cast<int>(record.trade_count)
-              << ", volume: " << static_cast<int>(record.volume)
-              << ", turnover: " << static_cast<int>(record.turnover)
-              << ", latest_price_tick: " << static_cast<int>(record.latest_price_tick)
-              << ", direction: " << static_cast<int>(record.direction)
-              << "\n";
-#endif
-
-    // Convert to Snapshot_Record
-    snapshot.year = year;
-    snapshot.month = month;
-    snapshot.day = record.day;
-    snapshot.hour = current_hour;
-    snapshot.minute = current_minute;
-    snapshot.second = current_second;
-    snapshot.seconds_in_day = record.time_s;
-    // Convert price from tick to float
-    snapshot.latest_price_tick = L1::TickToPrice(record.latest_price_tick);
-    snapshot.trade_count = record.trade_count;
-    snapshot.volume = record.volume;
-    snapshot.turnover = record.turnover;
-    // Convert bid prices and volumes
-    for (int i = 0; i < 5; ++i) {
-      snapshot.bid_price_ticks[i] = L1::TickToPrice(record.bid_price_ticks[i]);
-      snapshot.bid_volumes[i] = record.bid_volumes[i];
-    }
-    // Convert ask prices and volumes
-    for (int i = 0; i < 5; ++i) {
-      snapshot.ask_price_ticks[i] = L1::TickToPrice(record.ask_price_ticks[i]);
-      snapshot.ask_volumes[i] = record.ask_volumes[i];
-    }
-    snapshot.direction = record.direction;
-    // Send single snapshot to technical analysis for processing
-    technical_analysis_->ProcessSingleSnapshot(snapshot);
-  }
-}
-// Note: UpdateBar1mRecord function moved to technical_analysis.cpp
+// void Decoder::ProcessSnapshots(const std::vector<L1::Snapshot> &binary_records, uint16_t year, uint8_t month) {
+// #ifdef DEBUG_TIMER
+//   misc::Timer timer("ProcessSnapshots");
+// #endif
+//   if (binary_records.empty())
+//     return;
+// 
+//   Table::Snapshot_Record snapshot;
+// 
+//   for (const auto &record : binary_records) {
+//     ++records_count_;
+//     misc::print_progress(records_count_, total_records_);
+// 
+//     // Calculate time components (optimized)
+//     uint16_t time_s = record.time_s;
+//     uint8_t current_hour = static_cast<uint8_t>(time_s / 3600);
+//     uint16_t remaining_seconds = static_cast<uint16_t>(time_s % 3600);
+//     uint8_t current_minute = static_cast<uint8_t>(remaining_seconds / 60);
+//     uint8_t current_second = static_cast<uint8_t>(remaining_seconds % 60);
+// #ifdef PRINT_BINARY
+//     std::cout << "year: " << static_cast<int>(year)
+//               << ", month: " << static_cast<int>(month)
+//               << ", day: " << static_cast<int>(record.day)
+//               << ", hour: " << static_cast<int>(current_hour)
+//               << ", minute: " << static_cast<int>(current_minute)
+//               << ", second: " << static_cast<int>(current_second)
+//               << ", trade_count: " << static_cast<int>(record.trade_count)
+//               << ", volume: " << static_cast<int>(record.volume)
+//               << ", turnover: " << static_cast<int>(record.turnover)
+//               << ", latest_price_tick: " << static_cast<int>(record.latest_price_tick)
+//               << ", direction: " << static_cast<int>(record.direction)
+//               << "\n";
+// #endif
+// 
+//     // Convert to Snapshot_Record
+//     snapshot.year = year;
+//     snapshot.month = month;
+//     snapshot.day = record.day;
+//     snapshot.hour = current_hour;
+//     snapshot.minute = current_minute;
+//     snapshot.second = current_second;
+//     snapshot.seconds_in_day = record.time_s;
+//     // Convert price from tick to float
+//     snapshot.latest_price_tick = L1::TickToPrice(record.latest_price_tick);
+//     snapshot.trade_count = record.trade_count;
+//     snapshot.volume = record.volume;
+//     snapshot.turnover = record.turnover;
+//     // Convert bid prices and volumes
+//     for (int i = 0; i < 5; ++i) {
+//       snapshot.bid_price_ticks[i] = L1::TickToPrice(record.bid_price_ticks[i]);
+//       snapshot.bid_volumes[i] = record.bid_volumes[i];
+//     }
+//     // Convert ask prices and volumes
+//     for (int i = 0; i < 5; ++i) {
+//       snapshot.ask_price_ticks[i] = L1::TickToPrice(record.ask_price_ticks[i]);
+//       snapshot.ask_volumes[i] = record.ask_volumes[i];
+//     }
+//     snapshot.direction = record.direction;
+//   }
+// }
 
 // ============================================================================
 // FILE SYSTEM UTILITIES
@@ -285,14 +276,11 @@ void Decoder::ParseAsset(const std::string &asset_code,
                          const std::string &snapshot_dir,
                          const std::vector<std::string> &month_folders,
                          const std::string &output_dir) {
-  auto start_time = std::chrono::high_resolution_clock::now();
+  // auto start_time = std::chrono::high_resolution_clock::now();
 
   // Pre-calculate total records for progress tracking
   total_records_ = CalculateTotalRecordsForAsset(asset_code, snapshot_dir, month_folders);
   records_count_ = 0;
-
-  // Initialize technical analysis engine
-  technical_analysis_ = std::make_unique<::TechnicalAnalysis>(total_records_);
 
   for (const std::string &month_folder : month_folders) {
 #ifdef DEBUG_TIMER
@@ -328,18 +316,8 @@ void Decoder::ParseAsset(const std::string &asset_code,
     }
   }
 
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-  std::cout << "Processed asset " << asset_code << " across " << month_folders.size() << " months ("
-            << technical_analysis_->GetSnapshotCount() << " snapshot records, "
-            << technical_analysis_->GetBarCount() << " bar records (" << duration.count() << "ms))\n";
-
-  // Export results to CSV files via technical analysis
-  technical_analysis_->DumpBarCSV(asset_code, output_dir, 10000);
-  technical_analysis_->DumpSnapshotCSV(asset_code, output_dir, 10000);
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 }
-
-// Note: CSV output utilities moved to technical_analysis.cpp
 
 } // namespace BinaryDecoder_L1

@@ -10,53 +10,6 @@
 
 namespace L2 {
 
-// Automatic column width calculation from schema bit widths only
-namespace BitWidthFormat {
-// Calculate decimal digits needed for max value of given bit width
-inline constexpr int calc_digits(uint8_t bit_width) {
-  if (bit_width == 0)
-    return 1;
-  uint64_t max_val = (1ull << bit_width) - 1;
-
-  // Count digits by successive division
-  int digits = 0;
-  do {
-    digits++;
-    max_val /= 10;
-  } while (max_val > 0);
-
-  return digits;
-}
-
-// Get column width purely from schema bit width
-inline constexpr int get_width(std::string_view column_name) {
-  constexpr size_t schema_size = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
-  uint8_t bit_width = SchemaUtils::get_column_bitwidth(Snapshot_Schema, schema_size, column_name);
-  return calc_digits(bit_width);
-}
-
-// Snapshot field widths - purely derived from schema
-inline constexpr int hour_width() { return get_width("hour"); }
-inline constexpr int minute_width() { return get_width("minute"); }
-inline constexpr int second_width() { return get_width("second"); }
-inline constexpr int trade_count_width() { return get_width("trade_count"); }
-inline constexpr int volume_width() { return get_width("volume"); }
-inline constexpr int turnover_width() { return get_width("turnover"); }
-inline constexpr int price_width() { return get_width("high"); }
-inline constexpr int direction_width() { return get_width("direction"); }
-inline constexpr int vwap_width() { return get_width("all_bid_vwap"); }
-inline constexpr int total_volume_width() { return get_width("all_bid_volume"); }
-inline constexpr int bid_volume_width() { return get_width("bid_volumes[10]"); }
-inline constexpr int ask_volume_width() { return get_width("ask_volumes[10]"); }
-
-// Order field widths - purely derived from schema
-inline constexpr int order_type_width() { return get_width("order_type"); }
-inline constexpr int order_dir_width() { return get_width("order_dir"); }
-inline constexpr int order_price_width() { return get_width("price"); }
-inline constexpr int order_volume_width() { return get_width("volume"); }
-inline constexpr int order_id_width() { return get_width("bid_order_id"); }
-inline constexpr int millisecond_width() { return get_width("millisecond"); }
-} // namespace BitWidthFormat
 
 class BinaryDecoder_L2 {
 public:

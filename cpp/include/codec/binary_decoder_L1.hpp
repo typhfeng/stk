@@ -1,9 +1,7 @@
 #pragma once
 
 #include "codec/L1_DataType.hpp"
-#include "technical_analysis.hpp"
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -76,8 +74,6 @@ private:
   size_t total_records_ = 0;
   size_t records_count_ = 0;
 
-  // Technical analysis engine
-  std::unique_ptr<::TechnicalAnalysis> technical_analysis_;
 };
 
 } // namespace BinaryDecoder_L1

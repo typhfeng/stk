@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../codec/L2_DataType.hpp"
+#include "../AnalysisHighFrequency.hpp"
 #include "mem_pool.hpp"
 #include <algorithm>
 #include <cassert>
@@ -8,6 +9,7 @@
 #include <deque>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <memory_resource>
 #include <set>
 #include <sstream>
@@ -15,8 +17,8 @@
 #include <vector>
 
 #define PRINT_DEBUG 0
-#define PRINT_BOOK 0
-#define SINGLE_DAY 0
+#define PRINT_BOOK 1
+#define SINGLE_DAY 1
 
 namespace lob {
 
@@ -150,6 +152,9 @@ private:
   uint32_t prev_timestamp_ = 0;
   uint32_t curr_timestamp_ = 0;
   bool is_new_timestamp_ = false;
+
+  // Technical analysis engine
+  std::unique_ptr<::AnalysisHighFrequency> HFA_;
 
 public:
   // ========================================================================================

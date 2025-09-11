@@ -134,7 +134,7 @@ public:
 class BinaryManager {
 public:
   // Decode binary files for processing
-  static bool decode_binary_files(const std::string &snapshots_file, const std::string &orders_file, L2::BinaryDecoder_L2 &decoder, lob::LOB *book) {
+  static bool decode_binary_files(const std::string &snapshots_file, const std::string &orders_file, L2::BinaryDecoder_L2 &decoder, lob::LOB *lob) {
     bool decode_success = true;
 
     if (!snapshots_file.empty()) {
@@ -149,11 +149,12 @@ public:
       decode_success &= decoder.decode_orders(orders_file, decoded_orders);
       // decoder.print_all_orders(decoded_orders);
       // exit(1);
-      if (book) {
+      if (lob) {
         for (const auto &ord : decoded_orders) {
-          book->process(ord);
+          lob->process(ord);
+          // lob->TA_->ProcessSingleSnapshot(ord);
         }
-        book->clear();
+        lob->clear();
       }
     }
     return decode_success;
@@ -209,7 +210,7 @@ public:
 class AssetProcessor {
 public:
   // Process CSV files for a single asset on a single day with optimization for existing binaries
-  static bool process_asset_day_csv(const std::string &asset_code, const std::string &date_str, const std::string &temp_base_dir, const std::string &l2_archive_base, L2::BinaryEncoder_L2 &encoder, L2::BinaryDecoder_L2 &decoder, lob::LOB &book) {
+  static bool process_asset_day_csv(const std::string &asset_code, const std::string &date_str, const std::string &temp_base_dir, const std::string &l2_archive_base, L2::BinaryEncoder_L2 &encoder, L2::BinaryDecoder_L2 &decoder, lob::LOB &lob) {
     // Generate paths
     const std::string archive_path = PathUtils::generate_archive_path(l2_archive_base, date_str);
     const std::string temp_asset_dir = PathUtils::generate_temp_asset_dir(temp_base_dir, date_str, asset_code);
@@ -223,7 +224,7 @@ public:
 
     if (has_existing_binaries) {
       // std::cout << "    Found existing binaries for " << asset_code << " on " << date_str << ", skipping extraction/encoding\n";
-      return BinaryManager::decode_binary_files(existing_snapshots_file, existing_orders_file, decoder, &book);
+      return BinaryManager::decode_binary_files(existing_snapshots_file, existing_orders_file, decoder, &lob);
     }
 
     // Extract CSV files from archive - use unique directory per asset to avoid race conditions
@@ -263,7 +264,7 @@ public:
     const std::string snapshots_file = snapshots.empty() ? "" : temp_asset_dir + "/" + asset_code + "_snapshots_" + std::to_string(snapshots.size()) + Config::BIN_EXTENSION;
     const std::string orders_file = orders.empty() ? "" : temp_asset_dir + "/" + asset_code + "_orders_" + std::to_string(orders.size()) + Config::BIN_EXTENSION;
 
-    return BinaryManager::decode_binary_files(snapshots_file, orders_file, decoder, &book);
+    return BinaryManager::decode_binary_files(snapshots_file, orders_file, decoder, &lob);
   }
 };
 
@@ -393,7 +394,7 @@ void ProcessAsset(const std::string &asset_code, const JsonConfig::StockInfo &st
   L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_CAPACITY, L2::DEFAULT_ENCODER_MAX_SIZE);
 
   // Create a persistent LOB for this asset and reset after each day
-  lob::LOB book;
+  lob::LOB lob;
 
   // Generate date range for this asset
   const std::string start_formatted = JsonConfig::FormatYearMonth(stock_info.start_date);
@@ -408,7 +409,7 @@ void ProcessAsset(const std::string &asset_code, const JsonConfig::StockInfo &st
   size_t current_date_index = 0;
   for (const std::string &date_str : dates) {
     misc::print_progress(current_date_index + 1, dates.size(), "Processing " + asset_code + " - " + date_str);
-    if (AssetProcessor::process_asset_day_csv(asset_code, date_str, temp_base, l2_archive_base, encoder, decoder, book)) {
+    if (AssetProcessor::process_asset_day_csv(asset_code, date_str, temp_base, l2_archive_base, encoder, decoder, lob)) {
       processed_days++;
       // std::cout << "  Processed: " << date_str << " (day " << processed_days << ")\n";
 

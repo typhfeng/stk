@@ -169,81 +169,81 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
   std::cout << "=== All Snapshots ===" << std::endl;
 
   // Print aligned header using compile-time bit width calculations
-  using namespace BitWidthFormat;
+  using namespace BitwidthBounds;
 
-  std::cout << std::setw(hour_width()) << std::right << "hr" << " "
-            << std::setw(minute_width()) << std::right << "mn" << " "
-            << std::setw(second_width()) << std::right << "sc" << " "
-            << std::setw(trade_count_width()) << std::right << "trd" << " "
-            << std::setw(volume_width()) << std::right << "vol" << " "
-            << std::setw(turnover_width()) << std::right << "turnover" << " "
-            // << std::setw(price_width()) << std::right << "high" << " "
-            // << std::setw(price_width()) << std::right << "low" << " "
-            << std::setw(price_width()) << std::right << "close" << " ";
+  std::cout << std::setw(HOUR_WIDTH) << std::right << "hr" << " "
+            << std::setw(MINUTE_WIDTH) << std::right << "mn" << " "
+            << std::setw(SECOND_WIDTH) << std::right << "sc" << " "
+            << std::setw(TRADE_COUNT_WIDTH) << std::right << "trd" << " "
+            << std::setw(VOLUME_WIDTH) << std::right << "vol" << " "
+            << std::setw(TURNOVER_WIDTH) << std::right << "turnover" << " "
+            // << std::setw(PRICE_WIDTH) << std::right << "high" << " "
+            // << std::setw(PRICE_WIDTH) << std::right << "low" << " "
+            << std::setw(PRICE_WIDTH) << std::right << "close" << " ";
 
   // bid_price_ticks[10] - using price bit width from schema
   for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(price_width()) << std::right << ("bp" + std::to_string(i)) << " ";
+    std::cout << std::setw(PRICE_WIDTH) << std::right << ("bp" + std::to_string(i)) << " ";
   }
 
   // bid_volumes[10] - using schema-derived width
   for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(bid_volume_width()) << std::right << ("bv" + std::to_string(i)) << " ";
+    std::cout << std::setw(BID_VOLUME_WIDTH) << std::right << ("bv" + std::to_string(i)) << " ";
   }
 
   // ask_price_ticks[10] - using price bit width from schema
   for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(price_width()) << std::right << ("ap" + std::to_string(i)) << " ";
+    std::cout << std::setw(PRICE_WIDTH) << std::right << ("ap" + std::to_string(i)) << " ";
   }
 
   // ask_volumes[10] - using schema-derived width
   for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(ask_volume_width()) << std::right << ("av" + std::to_string(i)) << " ";
+    std::cout << std::setw(ASK_VOLUME_WIDTH) << std::right << ("av" + std::to_string(i)) << " ";
   }
 
-  std::cout << std::setw(direction_width()) << std::right << "d" << " "
-            << std::setw(vwap_width()) << std::right << "b_vwp" << " "
-            << std::setw(vwap_width()) << std::right << "a_vwp" << " "
-            << std::setw(total_volume_width()) << std::right << "b_vol" << " "
-            << std::setw(total_volume_width()) << std::right << "a_vol" << std::endl;
+  std::cout << std::setw(DIRECTION_WIDTH) << std::right << "d" << " "
+            << std::setw(VWAP_WIDTH) << std::right << "b_vwp" << " "
+            << std::setw(VWAP_WIDTH) << std::right << "a_vwp" << " "
+            << std::setw(TOTAL_VOLUME_WIDTH) << std::right << "b_vol" << " "
+            << std::setw(TOTAL_VOLUME_WIDTH) << std::right << "a_vol" << std::endl;
 
   // Print data rows with aligned formatting using compile-time bit width calculations
   for (const auto &snapshot : snapshots) {
-    std::cout << std::setw(hour_width()) << std::right << static_cast<int>(snapshot.hour) << " "
-              << std::setw(minute_width()) << std::right << static_cast<int>(snapshot.minute) << " "
-              << std::setw(second_width()) << std::right << static_cast<int>(snapshot.second) << " "
-              << std::setw(trade_count_width()) << std::right << static_cast<int>(snapshot.trade_count) << " "
-              << std::setw(volume_width()) << std::right << snapshot.volume << " "
-              << std::setw(turnover_width()) << std::right << snapshot.turnover << " "
-              // << std::setw(price_width()) << std::right << snapshot.high << " "
-              // << std::setw(price_width()) << std::right << snapshot.low << " "
-              << std::setw(price_width()) << std::right << snapshot.close << " ";
+    std::cout << std::setw(HOUR_WIDTH) << std::right << static_cast<int>(snapshot.hour) << " "
+              << std::setw(MINUTE_WIDTH) << std::right << static_cast<int>(snapshot.minute) << " "
+              << std::setw(SECOND_WIDTH) << std::right << static_cast<int>(snapshot.second) << " "
+              << std::setw(TRADE_COUNT_WIDTH) << std::right << static_cast<int>(snapshot.trade_count) << " "
+              << std::setw(VOLUME_WIDTH) << std::right << snapshot.volume << " "
+              << std::setw(TURNOVER_WIDTH) << std::right << snapshot.turnover << " "
+              // << std::setw(PRICE_WIDTH) << std::right << snapshot.high << " "
+              // << std::setw(PRICE_WIDTH) << std::right << snapshot.low << " "
+              << std::setw(PRICE_WIDTH) << std::right << snapshot.close << " ";
 
     // Output bid_price_ticks[10] - using price bit width from schema
     for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(price_width()) << std::right << snapshot.bid_price_ticks[i] << " ";
+      std::cout << std::setw(PRICE_WIDTH) << std::right << snapshot.bid_price_ticks[i] << " ";
     }
 
     // Output bid_volumes[10] - using schema-derived width
     for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(bid_volume_width()) << std::right << snapshot.bid_volumes[i] << " ";
+      std::cout << std::setw(BID_VOLUME_WIDTH) << std::right << snapshot.bid_volumes[i] << " ";
     }
 
     // Output ask_price_ticks[10] - using price bit width from schema
     for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(price_width()) << std::right << snapshot.ask_price_ticks[i] << " ";
+      std::cout << std::setw(PRICE_WIDTH) << std::right << snapshot.ask_price_ticks[i] << " ";
     }
 
     // Output ask_volumes[10] - using schema-derived width
     for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(ask_volume_width()) << std::right << snapshot.ask_volumes[i] << " ";
+      std::cout << std::setw(ASK_VOLUME_WIDTH) << std::right << snapshot.ask_volumes[i] << " ";
     }
 
-    std::cout << std::setw(direction_width()) << std::right << (snapshot.direction ? 1 : 0) << " "
-              << std::setw(vwap_width()) << std::right << snapshot.all_bid_vwap << " "
-              << std::setw(vwap_width()) << std::right << snapshot.all_ask_vwap << " "
-              << std::setw(total_volume_width()) << std::right << snapshot.all_bid_volume << " "
-              << std::setw(total_volume_width()) << std::right << snapshot.all_ask_volume << std::endl;
+    std::cout << std::setw(DIRECTION_WIDTH) << std::right << (snapshot.direction ? 1 : 0) << " "
+              << std::setw(VWAP_WIDTH) << std::right << snapshot.all_bid_vwap << " "
+              << std::setw(VWAP_WIDTH) << std::right << snapshot.all_ask_vwap << " "
+              << std::setw(TOTAL_VOLUME_WIDTH) << std::right << snapshot.all_bid_volume << " "
+              << std::setw(TOTAL_VOLUME_WIDTH) << std::right << snapshot.all_ask_volume << std::endl;
   }
 }
 
@@ -254,31 +254,31 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
   // 9  15  0   2 0 1   727     1          0     137524
 
   // Print aligned header using compile-time bit width calculations
-  using namespace BitWidthFormat;
+  using namespace BitwidthBounds;
 
-  std::cout << std::setw(hour_width()) << std::right << "hr" << " "
-            << std::setw(minute_width()) << std::right << "mn" << " "
-            << std::setw(second_width()) << std::right << "sc" << " "
-            << std::setw(millisecond_width()) << std::right << "ms" << " "
-            << std::setw(order_type_width()) << std::right << "t" << " "
-            << std::setw(order_dir_width()) << std::right << "d" << " "
-            << std::setw(order_price_width()) << std::right << "price" << " "
-            << std::setw(order_volume_width()) << std::right << "vol" << " "
-            << std::setw(order_id_width()) << std::right << "bid_ord_id" << " "
-            << std::setw(order_id_width()) << std::right << "ask_ord_id" << std::endl;
+  std::cout << std::setw(HOUR_WIDTH) << std::right << "hr" << " "
+            << std::setw(MINUTE_WIDTH) << std::right << "mn" << " "
+            << std::setw(SECOND_WIDTH) << std::right << "sc" << " "
+            << std::setw(MILLISECOND_WIDTH) << std::right << "ms" << " "
+            << std::setw(ORDER_TYPE_WIDTH) << std::right << "t" << " "
+            << std::setw(ORDER_DIR_WIDTH) << std::right << "d" << " "
+            << std::setw(ORDER_PRICE_WIDTH) << std::right << "price" << " "
+            << std::setw(ORDER_VOLUME_WIDTH) << std::right << "vol" << " "
+            << std::setw(ORDER_ID_WIDTH) << std::right << "bid_ord_id" << " "
+            << std::setw(ORDER_ID_WIDTH) << std::right << "ask_ord_id" << std::endl;
 
   // Print data rows with aligned formatting using compile-time bit width calculations
   for (const auto &order : orders) {
-    std::cout << std::setw(hour_width()) << std::right << static_cast<int>(order.hour) << " "
-              << std::setw(minute_width()) << std::right << static_cast<int>(order.minute) << " "
-              << std::setw(second_width()) << std::right << static_cast<int>(order.second) << " "
-              << std::setw(millisecond_width()) << std::right << static_cast<int>(order.millisecond) << " "
-              << std::setw(order_type_width()) << std::right << order_type_to_char(order.order_type) << " "
-              << std::setw(order_dir_width()) << std::right << order_dir_to_char(order.order_dir) << " "
-              << std::setw(order_price_width()) << std::right << order.price << " "
-              << std::setw(order_volume_width()) << std::right << order.volume << " "
-              << std::setw(order_id_width()) << std::right << order.bid_order_id << " "
-              << std::setw(order_id_width()) << std::right << order.ask_order_id << std::endl;
+    std::cout << std::setw(HOUR_WIDTH) << std::right << static_cast<int>(order.hour) << " "
+              << std::setw(MINUTE_WIDTH) << std::right << static_cast<int>(order.minute) << " "
+              << std::setw(SECOND_WIDTH) << std::right << static_cast<int>(order.second) << " "
+              << std::setw(MILLISECOND_WIDTH) << std::right << static_cast<int>(order.millisecond) << " "
+              << std::setw(ORDER_TYPE_WIDTH) << std::right << order_type_to_char(order.order_type) << " "
+              << std::setw(ORDER_DIR_WIDTH) << std::right << order_dir_to_char(order.order_dir) << " "
+              << std::setw(ORDER_PRICE_WIDTH) << std::right << order.price << " "
+              << std::setw(ORDER_VOLUME_WIDTH) << std::right << order.volume << " "
+              << std::setw(ORDER_ID_WIDTH) << std::right << order.bid_order_id << " "
+              << std::setw(ORDER_ID_WIDTH) << std::right << order.ask_order_id << std::endl;
   }
 }
 

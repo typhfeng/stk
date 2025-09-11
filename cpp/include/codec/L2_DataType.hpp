@@ -224,46 +224,70 @@ constexpr uint64_t bitwidth_to_max(uint8_t bitwidth) {
 }
 } // namespace SchemaUtils
 
-// Compile-time upper bound calculations based on schema definitions
-namespace BitwidthBounds {
-constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
-
-// Snapshot field upper bounds extracted from schema
-constexpr uint32_t HOUR_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "hour"));
-constexpr uint32_t MINUTE_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "minute"));
-constexpr uint32_t SECOND_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "second"));
-constexpr uint32_t TRADE_COUNT_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "trade_count"));
-constexpr uint32_t VOLUME_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
-constexpr uint64_t TURNOVER_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "turnover"));
-constexpr uint32_t PRICE_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "close"));
-constexpr uint32_t ORDERBOOK_VOLUME_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_volumes[10]"));
-constexpr uint32_t VWAP_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_vwap"));
-constexpr uint32_t TOTAL_VOLUME_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_volume"));
-
-// Order field upper bounds extracted from schema
-constexpr uint32_t MILLISECOND_BOUND = 127; // 7 bits for millisecond in 10ms units (not in schema)
-constexpr uint32_t ORDER_TYPE_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_type"));
-constexpr uint32_t ORDER_DIR_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_dir"));
-constexpr uint64_t ORDER_ID_BOUND = SchemaUtils::bitwidth_to_max(
-    SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_order_id"));
-
 // Helper functions for safe casting with bounds checking
 template <typename T>
 constexpr T clamp_to_bound(uint64_t value, T bound_val) {
   return static_cast<T>(value > bound_val ? bound_val : value);
 }
+
+// Calculate decimal digits needed for given bit width
+constexpr int calc_digits_from_bitwidth(uint8_t bit_width) {
+  if (bit_width == 0)
+    return 1;
+  uint64_t max_val = (1ull << bit_width) - 1;
+
+  int digits = 0;
+  do {
+    digits++;
+    max_val /= 10;
+  } while (max_val > 0);
+
+  return digits;
+}
+
+// Compile-time upper bound calculations based on schema definitions
+namespace BitwidthBounds {
+constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
+
+// Snapshot field upper bounds extracted from schema
+constexpr uint32_t HOUR_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "hour"));
+constexpr uint32_t MINUTE_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "minute"));
+constexpr uint32_t SECOND_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "second"));
+constexpr uint32_t TRADE_COUNT_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "trade_count"));
+constexpr uint32_t VOLUME_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
+constexpr uint64_t TURNOVER_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "turnover"));
+constexpr uint32_t PRICE_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "close"));
+constexpr uint32_t ORDERBOOK_VOLUME_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_volumes[10]"));
+constexpr uint32_t VWAP_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_vwap"));
+constexpr uint32_t TOTAL_VOLUME_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_volume"));
+
+// Order field upper bounds extracted from schema
+constexpr uint32_t MILLISECOND_BOUND = 127; // 7 bits for millisecond in 10ms units (not in schema)
+constexpr uint32_t ORDER_TYPE_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_type"));
+constexpr uint32_t ORDER_DIR_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_dir"));
+constexpr uint64_t ORDER_ID_BOUND = SchemaUtils::bitwidth_to_max(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_order_id"));
+
+// Snapshot field display widths extracted from schema
+constexpr int HOUR_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "hour"));
+constexpr int MINUTE_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "minute"));
+constexpr int SECOND_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "second"));
+constexpr int TRADE_COUNT_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "trade_count"));
+constexpr int VOLUME_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
+constexpr int TURNOVER_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "turnover"));
+constexpr int PRICE_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "close"));
+constexpr int DIRECTION_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "direction"));
+constexpr int VWAP_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_vwap"));
+constexpr int TOTAL_VOLUME_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_volume"));
+constexpr int BID_VOLUME_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_volumes[10]"));
+constexpr int ASK_VOLUME_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "ask_volumes[10]"));
+
+// Order field display widths extracted from schema
+constexpr int MILLISECOND_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "millisecond"));
+constexpr int ORDER_TYPE_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_type"));
+constexpr int ORDER_DIR_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_dir"));
+constexpr int ORDER_PRICE_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "price"));
+constexpr int ORDER_VOLUME_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
+constexpr int ORDER_ID_WIDTH = calc_digits_from_bitwidth(SchemaUtils::get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_order_id"));
 } // namespace BitwidthBounds
 
 } // namespace L2

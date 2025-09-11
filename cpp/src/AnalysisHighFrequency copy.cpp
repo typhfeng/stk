@@ -5,7 +5,7 @@
 #include <sstream>
 
 #include "define/Dtype.hpp"
-#include "technical_analysis.hpp"
+#include "AnalysisHighFrequency.hpp"
 
 #include "math/feature/LimitOrderBook.hpp" // LOB
 #include "math/sample/ResampleRunBar.hpp" // resample bar
@@ -17,7 +17,7 @@
 #include "misc/print.hpp"
 #endif
 
-TechnicalAnalysis::TechnicalAnalysis(size_t capacity)
+AnalysisHighFrequency::AnalysisHighFrequency(size_t capacity)
     : lob(
           &snapshot_delta_t_,
           &snapshot_prices_,
@@ -44,11 +44,11 @@ TechnicalAnalysis::TechnicalAnalysis(size_t capacity)
   bars.reserve(15 * 250 * trade_hrs_in_a_day * 3600 / RESAMPLE_BASE_PERIOD); // 15 years of resampled bars
 }
 
-TechnicalAnalysis::~TechnicalAnalysis() {
+AnalysisHighFrequency::~AnalysisHighFrequency() {
   // Cleanup completed
 }
 
-void TechnicalAnalysis::AnalyzeSnapshot(Table::Snapshot_Record &snapshot) {
+void AnalysisHighFrequency::AnalyzeSnapshot(Table::Snapshot_Record &snapshot) {
   lob.update(snapshot, is_session_start_);
 
   // Debug output
@@ -70,7 +70,7 @@ void TechnicalAnalysis::AnalyzeSnapshot(Table::Snapshot_Record &snapshot) {
 #endif
 }
 
-void TechnicalAnalysis::AnalyzeRunBar(const Table::RunBar_Record &bar) {
+void AnalysisHighFrequency::AnalyzeRunBar(const Table::RunBar_Record &bar) {
   (void)bar; // Suppress unused parameter warning
 
 #ifdef PRINT_BAR
@@ -90,7 +90,7 @@ void TechnicalAnalysis::AnalyzeRunBar(const Table::RunBar_Record &bar) {
 #endif
 }
 
-void TechnicalAnalysis::ProcessSingleSnapshot(Table::Snapshot_Record &snapshot) { // pass by reference
+void AnalysisHighFrequency::ProcessSingleSnapshot(Table::Snapshot_Record &snapshot) { // pass by reference
   // Fill gaps by creating intermediate snapshots and processing each one
 #ifdef FILL_GAP_SNAPSHOT
   if (has_previous_snapshot_) [[likely]] {
@@ -116,7 +116,7 @@ void TechnicalAnalysis::ProcessSingleSnapshot(Table::Snapshot_Record &snapshot) 
 #endif
 }
 
-void TechnicalAnalysis::ProcessSnapshotInternal(Table::Snapshot_Record &snapshot) {
+void AnalysisHighFrequency::ProcessSnapshotInternal(Table::Snapshot_Record &snapshot) {
   UpdateMarketState(snapshot);
 
   if (market_state_ == 2) [[likely]] { // in market open
@@ -131,7 +131,7 @@ void TechnicalAnalysis::ProcessSnapshotInternal(Table::Snapshot_Record &snapshot
   }
 }
 
-inline void TechnicalAnalysis::UpdateMarketState(const Table::Snapshot_Record &snapshot) {
+inline void AnalysisHighFrequency::UpdateMarketState(const Table::Snapshot_Record &snapshot) {
   // States (no seconds):
   // 0 close: default
   // 1 pre-market: 09:15:01-09:25:00 (inclusive minutes)
@@ -166,7 +166,7 @@ inline void TechnicalAnalysis::UpdateMarketState(const Table::Snapshot_Record &s
 }
 
 #ifdef FILL_GAP_SNAPSHOT
-void TechnicalAnalysis::GetGapSnapshot(uint32_t timestamp) {
+void AnalysisHighFrequency::GetGapSnapshot(uint32_t timestamp) {
 
   // Preserve date and static price information from the last valid snapshot
   gap_snapshot_ = last_snapshot_;
@@ -303,10 +303,10 @@ inline void DumpRecordsToCSV(const std::vector<RecordType> &records,
 } // anonymous namespace
 
 // Public interface methods
-void TechnicalAnalysis::DumpSnapshotCSV(const std::string &asset_code, const std::string &output_dir, size_t last_n) const {
+void AnalysisHighFrequency::DumpSnapshotCSV(const std::string &asset_code, const std::string &output_dir, size_t last_n) const {
   DumpRecordsToCSV(snapshots_, asset_code, output_dir, "snapshot_3s", last_n);
 }
 
-void TechnicalAnalysis::DumpBarCSV(const std::string &asset_code, const std::string &output_dir, size_t last_n) const {
+void AnalysisHighFrequency::DumpBarCSV(const std::string &asset_code, const std::string &output_dir, size_t last_n) const {
   DumpRecordsToCSV(bars, asset_code, output_dir, "bar_resampled", last_n);
 }

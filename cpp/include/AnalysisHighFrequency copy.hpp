@@ -10,10 +10,10 @@
 
 // #define FILL_GAP_SNAPSHOT
 
-class TechnicalAnalysis {
+class AnalysisHighFrequency {
 public:
-  TechnicalAnalysis(size_t capacity);
-  ~TechnicalAnalysis();
+  AnalysisHighFrequency(size_t capacity);
+  ~AnalysisHighFrequency();
 
   // Main interface - processes single snapshot with richer info
   void ProcessSingleSnapshot(Table::Snapshot_Record &snapshot);
@@ -33,15 +33,6 @@ private:
   // Analysis functions
   inline void AnalyzeSnapshot(Table::Snapshot_Record &snapshot);
   inline void AnalyzeRunBar(const Table::RunBar_Record &bar);
-
-#ifdef FILL_GAP_SNAPSHOT
-  // Gap filling
-  inline void GetGapSnapshot(uint32_t timestamp);
-  bool has_previous_snapshot_ = false;
-  uint32_t last_processed_time_ = 0;
-  Table::Snapshot_Record last_snapshot_;
-  Table::Snapshot_Record gap_snapshot_;
-#endif
 
   Table::RunBar_Record resampled_bar_;
 
