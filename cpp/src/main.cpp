@@ -23,13 +23,13 @@ void ProcessAsset(const std::string &asset_code,
   const auto month_range = JsonConfig::GetMonthRange(stock_info.start_date, stock_info.end_date);
 
   // Pre-allocate decoder with estimated capacity to avoid reallocations
-  L2::BinaryDecoder_L2 decoder(50000, 250000); // Estimated snapshots and orders per asset
+  L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE); // Estimated snapshots and orders per asset
 
   // Pre-allocate reusable containers to avoid repeated allocations
   std::vector<L2::Snapshot> snapshots;
   std::vector<L2::Order> orders;
-  snapshots.reserve(L2::DEFAULT_ENCODER_MAX_SIZE); // Reserve space for typical daily snapshots
-  orders.reserve(L2::DEFAULT_ENCODER_MAX_SIZE);    // Reserve space for typical daily orders
+  snapshots.reserve(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE); // Reserve space for typical daily snapshots
+  orders.reserve(L2::DEFAULT_ENCODER_ORDER_SIZE);    // Reserve space for typical daily orders
 
   // Pre-allocate string buffers for path construction
   std::string month_path, asset_path, snapshots_file, orders_file;

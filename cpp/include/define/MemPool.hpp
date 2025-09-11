@@ -35,7 +35,7 @@
    - 桶内线性查找
 */
 
-namespace mem_pool {
+namespace MemPool {
 
 // ============================================================================
 // Performance Configuration Parameters
@@ -397,4 +397,4 @@ private:
   }
 };
 
-} // namespace mem_pool
+} // namespace MemPool

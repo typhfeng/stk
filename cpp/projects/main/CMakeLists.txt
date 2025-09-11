@@ -41,8 +41,6 @@ set(SOURCES
     ../../src/codec/json_config.cpp
     ../../src/codec/binary_decoder_L1.cpp
     ../../src/codec/binary_decoder_L2.cpp
-    ../../src/AnalysisTechnical.cpp
-    ../../src/AnalysisHighFrequency.cpp
     ../../src/main.cpp
 )
 
@@ -60,7 +58,7 @@ set(HEADERS
     ../../include/codec/binary_decoder_L2.hpp
     ../../include/codec/delta_encoding.hpp
     ../../include/codec/L2_DataType.hpp
-    ../../include/AnalysisTechnical.hpp
+    # ../../include/AnalysisTechnical.hpp
     ../../include/AnalysisHighFrequency.hpp
 )
 

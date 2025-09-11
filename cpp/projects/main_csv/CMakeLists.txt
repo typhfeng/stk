@@ -43,8 +43,6 @@ set(SOURCES
     ../../src/codec/binary_decoder_L2.cpp
     ../../src/codec/binary_encoder_L2.cpp
     ../../src/misc/logging.cpp
-    ../../src/AnalysisTechnical.cpp
-    ../../src/AnalysisHighFrequency.cpp
     ../../src/main_csv.cpp
 )
 
@@ -64,7 +62,7 @@ set(HEADERS
     ../../include/codec/binary_encoder_L2.hpp
     ../../include/codec/delta_encoding.hpp
     ../../include/codec/L2_DataType.hpp
-    ../../include/AnalysisTechnical.hpp
+    # ../../include/AnalysisTechnical.hpp
     ../../include/AnalysisHighFrequency.hpp
 )
 

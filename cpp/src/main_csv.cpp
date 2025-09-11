@@ -2,6 +2,7 @@
 #include "codec/binary_decoder_L2.hpp"
 #include "codec/binary_encoder_L2.hpp"
 #include "codec/json_config.hpp"
+#include "AnalysisHighFrequency.hpp"
 #include "misc/affinity.hpp"
 #include "misc/misc.hpp"
 #include <algorithm>
@@ -15,8 +16,6 @@
 #include <regex>
 #include <string>
 #include <vector>
-
-#include "lob/lob_deduct.hpp"
 
 // this mode is for debugging without preparing the whole L2 binary database
 // instead of binary, we parse data directly from csv, encode them, then decode them (so we can follow standard flow without rewriting)
@@ -134,7 +133,7 @@ public:
 class BinaryManager {
 public:
   // Decode binary files for processing
-  static bool decode_binary_files(const std::string &snapshots_file, const std::string &orders_file, L2::BinaryDecoder_L2 &decoder, lob::LOB *lob) {
+  static bool decode_binary_files(const std::string &snapshots_file, const std::string &orders_file, L2::BinaryDecoder_L2 &decoder, AnalysisHighFrequency *HFA_) {
     bool decode_success = true;
 
     if (!snapshots_file.empty()) {
@@ -149,12 +148,12 @@ public:
       decode_success &= decoder.decode_orders(orders_file, decoded_orders);
       // decoder.print_all_orders(decoded_orders);
       // exit(1);
-      if (lob) {
+      if (HFA_) {
         for (const auto &ord : decoded_orders) {
-          lob->process(ord);
+          HFA_->process(ord);
           // lob->TA_->ProcessSingleSnapshot(ord);
         }
-        lob->clear();
+        HFA_->clear();
       }
     }
     return decode_success;
@@ -210,7 +209,7 @@ public:
 class AssetProcessor {
 public:
   // Process CSV files for a single asset on a single day with optimization for existing binaries
-  static bool process_asset_day_csv(const std::string &asset_code, const std::string &date_str, const std::string &temp_base_dir, const std::string &l2_archive_base, L2::BinaryEncoder_L2 &encoder, L2::BinaryDecoder_L2 &decoder, lob::LOB &lob) {
+  static bool process_asset_day_csv(const std::string &asset_code, const std::string &date_str, const std::string &temp_base_dir, const std::string &l2_archive_base, L2::BinaryEncoder_L2 &encoder, L2::BinaryDecoder_L2 &decoder, AnalysisHighFrequency &HFA_) {
     // Generate paths
     const std::string archive_path = PathUtils::generate_archive_path(l2_archive_base, date_str);
     const std::string temp_asset_dir = PathUtils::generate_temp_asset_dir(temp_base_dir, date_str, asset_code);
@@ -224,7 +223,7 @@ public:
 
     if (has_existing_binaries) {
       // std::cout << "    Found existing binaries for " << asset_code << " on " << date_str << ", skipping extraction/encoding\n";
-      return BinaryManager::decode_binary_files(existing_snapshots_file, existing_orders_file, decoder, &lob);
+      return BinaryManager::decode_binary_files(existing_snapshots_file, existing_orders_file, decoder, &HFA_);
     }
 
     // Extract CSV files from archive - use unique directory per asset to avoid race conditions
@@ -264,7 +263,7 @@ public:
     const std::string snapshots_file = snapshots.empty() ? "" : temp_asset_dir + "/" + asset_code + "_snapshots_" + std::to_string(snapshots.size()) + Config::BIN_EXTENSION;
     const std::string orders_file = orders.empty() ? "" : temp_asset_dir + "/" + asset_code + "_orders_" + std::to_string(orders.size()) + Config::BIN_EXTENSION;
 
-    return BinaryManager::decode_binary_files(snapshots_file, orders_file, decoder, &lob);
+    return BinaryManager::decode_binary_files(snapshots_file, orders_file, decoder, &HFA_);
   }
 };
 
@@ -390,11 +389,11 @@ void ProcessAsset(const std::string &asset_code, const JsonConfig::StockInfo &st
   std::cout << "Processing asset: " << asset_code << " (" << stock_info.name << ")\n";
 
   // Create encoder and decoder instances with configured capacity
-  L2::BinaryEncoder_L2 encoder(L2::DEFAULT_ENCODER_CAPACITY, L2::DEFAULT_ENCODER_MAX_SIZE);
-  L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_CAPACITY, L2::DEFAULT_ENCODER_MAX_SIZE);
+  L2::BinaryEncoder_L2 encoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
+  L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
 
   // Create a persistent LOB for this asset and reset after each day
-  lob::LOB lob;
+  AnalysisHighFrequency HFA_(L2::DEFAULT_ENCODER_ORDER_SIZE);
 
   // Generate date range for this asset
   const std::string start_formatted = JsonConfig::FormatYearMonth(stock_info.start_date);
@@ -409,7 +408,7 @@ void ProcessAsset(const std::string &asset_code, const JsonConfig::StockInfo &st
   size_t current_date_index = 0;
   for (const std::string &date_str : dates) {
     misc::print_progress(current_date_index + 1, dates.size(), "Processing " + asset_code + " - " + date_str);
-    if (AssetProcessor::process_asset_day_csv(asset_code, date_str, temp_base, l2_archive_base, encoder, decoder, lob)) {
+    if (AssetProcessor::process_asset_day_csv(asset_code, date_str, temp_base, l2_archive_base, encoder, decoder, HFA_)) {
       processed_days++;
       // std::cout << "  Processed: " << date_str << " (day " << processed_days << ")\n";
 

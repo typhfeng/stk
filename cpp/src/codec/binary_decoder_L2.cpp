@@ -169,7 +169,7 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
   std::cout << "=== All Snapshots ===" << std::endl;
 
   // Print aligned header using compile-time bit width calculations
-  using namespace BitwidthBounds;
+  using namespace SchemaUtils;
 
   std::cout << std::setw(HOUR_WIDTH) << std::right << "hr" << " "
             << std::setw(MINUTE_WIDTH) << std::right << "mn" << " "
@@ -254,7 +254,7 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
   // 9  15  0   2 0 1   727     1          0     137524
 
   // Print aligned header using compile-time bit width calculations
-  using namespace BitwidthBounds;
+  using namespace SchemaUtils;
 
   std::cout << std::setw(HOUR_WIDTH) << std::right << "hr" << " "
             << std::setw(MINUTE_WIDTH) << std::right << "mn" << " "

@@ -401,34 +401,34 @@ Snapshot BinaryEncoder_L2::csv_to_snapshot(const CSVSnapshot &csv_snap) {
   Snapshot snapshot = {};
 
   uint32_t time_ms = parse_time_to_ms(csv_snap.time);
-  snapshot.hour = BitwidthBounds::clamp_to_bound(time_to_hour(time_ms), BitwidthBounds::HOUR_BOUND);
-  snapshot.minute = BitwidthBounds::clamp_to_bound(time_to_minute(time_ms), BitwidthBounds::MINUTE_BOUND);
-  snapshot.second = BitwidthBounds::clamp_to_bound(time_to_second(time_ms), BitwidthBounds::SECOND_BOUND);
+  snapshot.hour = SchemaUtils::clamp_to_bound(time_to_hour(time_ms), SchemaUtils::HOUR_BOUND);
+  snapshot.minute = SchemaUtils::clamp_to_bound(time_to_minute(time_ms), SchemaUtils::MINUTE_BOUND);
+  snapshot.second = SchemaUtils::clamp_to_bound(time_to_second(time_ms), SchemaUtils::SECOND_BOUND);
 
-  snapshot.trade_count = BitwidthBounds::clamp_to_bound(csv_snap.trade_count, BitwidthBounds::TRADE_COUNT_BOUND);
-  snapshot.volume = BitwidthBounds::clamp_to_bound(csv_snap.volume, BitwidthBounds::VOLUME_BOUND);
-  snapshot.turnover = BitwidthBounds::clamp_to_bound(csv_snap.turnover, BitwidthBounds::TURNOVER_BOUND);
+  snapshot.trade_count = SchemaUtils::clamp_to_bound(csv_snap.trade_count, SchemaUtils::TRADE_COUNT_BOUND);
+  snapshot.volume = SchemaUtils::clamp_to_bound(csv_snap.volume, SchemaUtils::VOLUME_BOUND);
+  snapshot.turnover = SchemaUtils::clamp_to_bound(csv_snap.turnover, SchemaUtils::TURNOVER_BOUND);
 
   // Convert prices using 14-bit bounds
-  // snapshot.high = BitwidthBounds::clamp_to_bound(csv_snap.high, BitwidthBounds::PRICE_BOUND);
-  // snapshot.low = BitwidthBounds::clamp_to_bound(csv_snap.low, BitwidthBounds::PRICE_BOUND);
-  snapshot.close = BitwidthBounds::clamp_to_bound(csv_snap.price, BitwidthBounds::PRICE_BOUND);
+  // snapshot.high = SchemaUtils::clamp_to_bound(csv_snap.high, SchemaUtils::PRICE_BOUND);
+  // snapshot.low = SchemaUtils::clamp_to_bound(csv_snap.low, SchemaUtils::PRICE_BOUND);
+  snapshot.close = SchemaUtils::clamp_to_bound(csv_snap.price, SchemaUtils::PRICE_BOUND);
 
   // Copy bid/ask prices and volumes using bitwidth-based bounds
   for (int i = 0; i < 10; i++) {
-    snapshot.bid_price_ticks[i] = BitwidthBounds::clamp_to_bound(csv_snap.bid_prices[i], BitwidthBounds::PRICE_BOUND);
-    snapshot.bid_volumes[i] = BitwidthBounds::clamp_to_bound(csv_snap.bid_volumes[i], BitwidthBounds::ORDERBOOK_VOLUME_BOUND);
-    snapshot.ask_price_ticks[i] = BitwidthBounds::clamp_to_bound(csv_snap.ask_prices[i], BitwidthBounds::PRICE_BOUND);
-    snapshot.ask_volumes[i] = BitwidthBounds::clamp_to_bound(csv_snap.ask_volumes[i], BitwidthBounds::ORDERBOOK_VOLUME_BOUND);
+    snapshot.bid_price_ticks[i] = SchemaUtils::clamp_to_bound(csv_snap.bid_prices[i], SchemaUtils::PRICE_BOUND);
+    snapshot.bid_volumes[i] = SchemaUtils::clamp_to_bound(csv_snap.bid_volumes[i], SchemaUtils::ORDERBOOK_VOLUME_BOUND);
+    snapshot.ask_price_ticks[i] = SchemaUtils::clamp_to_bound(csv_snap.ask_prices[i], SchemaUtils::PRICE_BOUND);
+    snapshot.ask_volumes[i] = SchemaUtils::clamp_to_bound(csv_snap.ask_volumes[i], SchemaUtils::ORDERBOOK_VOLUME_BOUND);
   }
 
   // Determine direction based on price movement (simplified)
   snapshot.direction = false; // Default to buy direction
 
-  snapshot.all_bid_vwap = BitwidthBounds::clamp_to_bound(csv_snap.weighted_avg_bid_price, BitwidthBounds::VWAP_BOUND);
-  snapshot.all_ask_vwap = BitwidthBounds::clamp_to_bound(csv_snap.weighted_avg_ask_price, BitwidthBounds::VWAP_BOUND);
-  snapshot.all_bid_volume = BitwidthBounds::clamp_to_bound(csv_snap.total_bid_volume, BitwidthBounds::TOTAL_VOLUME_BOUND);
-  snapshot.all_ask_volume = BitwidthBounds::clamp_to_bound(csv_snap.total_ask_volume, BitwidthBounds::TOTAL_VOLUME_BOUND);
+  snapshot.all_bid_vwap = SchemaUtils::clamp_to_bound(csv_snap.weighted_avg_bid_price, SchemaUtils::VWAP_BOUND);
+  snapshot.all_ask_vwap = SchemaUtils::clamp_to_bound(csv_snap.weighted_avg_ask_price, SchemaUtils::VWAP_BOUND);
+  snapshot.all_bid_volume = SchemaUtils::clamp_to_bound(csv_snap.total_bid_volume, SchemaUtils::TOTAL_VOLUME_BOUND);
+  snapshot.all_ask_volume = SchemaUtils::clamp_to_bound(csv_snap.total_ask_volume, SchemaUtils::TOTAL_VOLUME_BOUND);
 
   return snapshot;
 }
@@ -437,25 +437,25 @@ Order BinaryEncoder_L2::csv_to_order(const CSVOrder &csv_order) {
   Order order = {};
 
   uint32_t time_ms = parse_time_to_ms(csv_order.time);
-  order.hour = BitwidthBounds::clamp_to_bound(time_to_hour(time_ms), BitwidthBounds::HOUR_BOUND);
-  order.minute = BitwidthBounds::clamp_to_bound(time_to_minute(time_ms), BitwidthBounds::MINUTE_BOUND);
-  order.second = BitwidthBounds::clamp_to_bound(time_to_second(time_ms), BitwidthBounds::SECOND_BOUND);
-  order.millisecond = BitwidthBounds::clamp_to_bound(time_to_millisecond_10ms(time_ms), BitwidthBounds::MILLISECOND_BOUND);
+  order.hour = SchemaUtils::clamp_to_bound(time_to_hour(time_ms), SchemaUtils::HOUR_BOUND);
+  order.minute = SchemaUtils::clamp_to_bound(time_to_minute(time_ms), SchemaUtils::MINUTE_BOUND);
+  order.second = SchemaUtils::clamp_to_bound(time_to_second(time_ms), SchemaUtils::SECOND_BOUND);
+  order.millisecond = SchemaUtils::clamp_to_bound(time_to_millisecond_10ms(time_ms), SchemaUtils::MILLISECOND_BOUND);
 
   bool is_szse = is_szse_market(csv_order.stock_code);
-  order.order_type = BitwidthBounds::clamp_to_bound(determine_order_type(csv_order.order_type, '0', false, is_szse), BitwidthBounds::ORDER_TYPE_BOUND);
-  order.order_dir = BitwidthBounds::clamp_to_bound(determine_order_direction(csv_order.order_side), BitwidthBounds::ORDER_DIR_BOUND);
-  order.price = BitwidthBounds::clamp_to_bound(csv_order.price, BitwidthBounds::PRICE_BOUND);
-  order.volume = BitwidthBounds::clamp_to_bound(csv_order.volume, BitwidthBounds::VOLUME_BOUND);
+  order.order_type = SchemaUtils::clamp_to_bound(determine_order_type(csv_order.order_type, '0', false, is_szse), SchemaUtils::ORDER_TYPE_BOUND);
+  order.order_dir = SchemaUtils::clamp_to_bound(determine_order_direction(csv_order.order_side), SchemaUtils::ORDER_DIR_BOUND);
+  order.price = SchemaUtils::clamp_to_bound(csv_order.price, SchemaUtils::PRICE_BOUND);
+  order.volume = SchemaUtils::clamp_to_bound(csv_order.volume, SchemaUtils::VOLUME_BOUND);
 
   // Set order IDs based on direction and type
   // Use exchange_order_id (field 5) as it contains the actual order ID
   if (order.order_dir == 0) { // bid
-    order.bid_order_id = BitwidthBounds::clamp_to_bound(csv_order.exchange_order_id, BitwidthBounds::ORDER_ID_BOUND);
+    order.bid_order_id = SchemaUtils::clamp_to_bound(csv_order.exchange_order_id, SchemaUtils::ORDER_ID_BOUND);
     order.ask_order_id = 0;
   } else { // ask
     order.bid_order_id = 0;
-    order.ask_order_id = BitwidthBounds::clamp_to_bound(csv_order.exchange_order_id, BitwidthBounds::ORDER_ID_BOUND);
+    order.ask_order_id = SchemaUtils::clamp_to_bound(csv_order.exchange_order_id, SchemaUtils::ORDER_ID_BOUND);
   }
 
   return order;
@@ -465,32 +465,32 @@ Order BinaryEncoder_L2::csv_to_trade(const CSVTrade &csv_trade) {
   Order order = {};
 
   uint32_t time_ms = parse_time_to_ms(csv_trade.time);
-  order.hour = BitwidthBounds::clamp_to_bound(time_to_hour(time_ms), BitwidthBounds::HOUR_BOUND);
-  order.minute = BitwidthBounds::clamp_to_bound(time_to_minute(time_ms), BitwidthBounds::MINUTE_BOUND);
-  order.second = BitwidthBounds::clamp_to_bound(time_to_second(time_ms), BitwidthBounds::SECOND_BOUND);
-  order.millisecond = BitwidthBounds::clamp_to_bound(time_to_millisecond_10ms(time_ms), BitwidthBounds::MILLISECOND_BOUND);
+  order.hour = SchemaUtils::clamp_to_bound(time_to_hour(time_ms), SchemaUtils::HOUR_BOUND);
+  order.minute = SchemaUtils::clamp_to_bound(time_to_minute(time_ms), SchemaUtils::MINUTE_BOUND);
+  order.second = SchemaUtils::clamp_to_bound(time_to_second(time_ms), SchemaUtils::SECOND_BOUND);
+  order.millisecond = SchemaUtils::clamp_to_bound(time_to_millisecond_10ms(time_ms), SchemaUtils::MILLISECOND_BOUND);
 
   bool is_szse = is_szse_market(csv_trade.stock_code);
-  order.order_type = BitwidthBounds::clamp_to_bound(determine_order_type('0', csv_trade.trade_code, true, is_szse), BitwidthBounds::ORDER_TYPE_BOUND);
+  order.order_type = SchemaUtils::clamp_to_bound(determine_order_type('0', csv_trade.trade_code, true, is_szse), SchemaUtils::ORDER_TYPE_BOUND);
   
   // For SZSE cancellation (BS flag is null/empty), determine direction from bid_order_id
   // null:撤单(bid_id!=0:B:S) - if bid_id != 0 then B, else S
   if (is_szse && (csv_trade.bs_flag == ' ' || csv_trade.bs_flag == '\0')) {
     // For SZSE cancellation: if bid_order_id != 0, it's a buy side cancellation (B), else sell side (S)
     char effective_bs_flag = (csv_trade.bid_order_id != 0) ? 'B' : 'S';
-    order.order_dir = BitwidthBounds::clamp_to_bound(determine_order_direction(effective_bs_flag), BitwidthBounds::ORDER_DIR_BOUND);
+    order.order_dir = SchemaUtils::clamp_to_bound(determine_order_direction(effective_bs_flag), SchemaUtils::ORDER_DIR_BOUND);
   } else {
-    order.order_dir = BitwidthBounds::clamp_to_bound(determine_order_direction(csv_trade.bs_flag), BitwidthBounds::ORDER_DIR_BOUND);
+    order.order_dir = SchemaUtils::clamp_to_bound(determine_order_direction(csv_trade.bs_flag), SchemaUtils::ORDER_DIR_BOUND);
   }
   
-  order.price = BitwidthBounds::clamp_to_bound(csv_trade.price, BitwidthBounds::PRICE_BOUND);
-  order.volume = BitwidthBounds::clamp_to_bound(csv_trade.volume, BitwidthBounds::VOLUME_BOUND);
+  order.price = SchemaUtils::clamp_to_bound(csv_trade.price, SchemaUtils::PRICE_BOUND);
+  order.volume = SchemaUtils::clamp_to_bound(csv_trade.volume, SchemaUtils::VOLUME_BOUND);
 
   // For trades, set both order IDs directly from CSV
   // The CSV already provides the correct bid_order_id and ask_order_id values
   // according to the specification table for trades (order_type=3)
-  order.bid_order_id = BitwidthBounds::clamp_to_bound(csv_trade.bid_order_id, BitwidthBounds::ORDER_ID_BOUND);
-  order.ask_order_id = BitwidthBounds::clamp_to_bound(csv_trade.ask_order_id, BitwidthBounds::ORDER_ID_BOUND);
+  order.bid_order_id = SchemaUtils::clamp_to_bound(csv_trade.bid_order_id, SchemaUtils::ORDER_ID_BOUND);
+  order.ask_order_id = SchemaUtils::clamp_to_bound(csv_trade.ask_order_id, SchemaUtils::ORDER_ID_BOUND);
 
   return order;
 }
