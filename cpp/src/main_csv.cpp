@@ -44,7 +44,7 @@ public:
   static std::string generate_archive_path(const std::string &base_dir, const std::string &date_str) {
     const std::string year = date_str.substr(0, 4);
     const std::string month = date_str.substr(4, 2);
-    return base_dir + "/" + year + "/" + month + "/" + date_str + ".7z/rar";
+    return base_dir + "/" + year + "/" + month + "/" + date_str + Config::SEVEN_ZIP_CMD;
   }
 
   // Generate temporary asset directory path
