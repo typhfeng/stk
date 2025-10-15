@@ -21,8 +21,8 @@
 // instead of binary, we parse data directly from csv, encode them, then decode them (so we can follow standard flow without rewriting)
 // 1. get the target assets from config files, and the backtest period
 // 2. prepare a thread pool, each responsible for 1 single asset each time, with affinity tied to no_asset%no_thread
-// 3. the .7z csv files path are like these (.7z supports selective extraction): /mnt/dev/sde/A_stock/L2/2017/01/20170103.7z -> 20170103/603993.SH/(逐笔成交.csv,逐笔委托.csv,行情.csv)
-// 4. we extract the csv files to /tmp/2017/01/03/603993.SH/(逐笔成交.csv,逐笔委托.csv,行情.csv)
+// 3. the .7z/rar csv files path are like these (.7z/rar supports selective extraction): /mnt/dev/sde/A_stock/L2/2025/202501/20250103.7z/rar -> 20250103/600000.SH/(逐笔成交.csv,逐笔委托.csv,行情.csv)
+// 4. we extract the csv files to /tmp/2025/01/03/600000.SH/(逐笔成交.csv,逐笔委托.csv,行情.csv)
 // 5. after the extraction is done, we can reuse the path iterator(ordered by date) to go through 1-by-1 on all csv files, use L2:encoder to generate snapshots and orders binary in the very same folder
 // 6. after all binaries are generated, use L2:decoder to decode them, then process them doing backtesting
 
@@ -30,7 +30,7 @@
 namespace Config {
 
 constexpr const char *BIN_EXTENSION = ".bin";
-constexpr const char *SEVEN_ZIP_CMD = "7z";
+constexpr const char *SEVEN_ZIP_CMD = "rar"; // 7z/rar
 } // namespace Config
 
 // CSV debugging mode for L2 data processing without full binary database
@@ -40,11 +40,11 @@ constexpr const char *SEVEN_ZIP_CMD = "7z";
 // Path and date utility functions
 class PathUtils {
 public:
-  // Generate 7z archive path from date and base directory
+  // Generate 7z/rar archive path from date and base directory
   static std::string generate_archive_path(const std::string &base_dir, const std::string &date_str) {
     const std::string year = date_str.substr(0, 4);
     const std::string month = date_str.substr(4, 2);
-    return base_dir + "/" + year + "/" + month + "/" + date_str + ".7z";
+    return base_dir + "/" + year + "/" + month + "/" + date_str + ".7z/rar";
   }
 
   // Generate temporary asset directory path
@@ -72,8 +72,8 @@ public:
 // File extraction and management
 class FileManager {
 public:
-  // Extract specific asset CSV files from 7z archive to temporary directory
-  static bool extract_asset_csv_from_7z(const std::string &archive_path, const std::string &asset_code, const std::string &temp_dir) {
+  // Extract specific asset CSV files from 7z/rar archive to temporary directory
+  static bool extract_asset_csv(const std::string &archive_path, const std::string &asset_code, const std::string &temp_dir) {
     if (!std::filesystem::exists(archive_path)) {
       return false;
     }
@@ -178,7 +178,7 @@ public:
     const int end_year = std::stoi(end_match[1]);
     const int end_mon = std::stoi(end_match[2]);
 
-    // Check all possible dates in range and add only those with existing 7z files
+    // Check all possible dates in range and add only those with existing 7z/rar files
     for (int year = start_year; year <= end_year; ++year) {
       const int mon_start = (year == start_year) ? start_mon : 1;
       const int mon_end = (year == end_year) ? end_mon : 12;
@@ -191,7 +191,7 @@ public:
           snprintf(date_buf, sizeof(date_buf), "%04d%02d%02d", year, month, day);
           const std::string date_str(date_buf);
 
-          // Check if 7z archive exists for this date
+          // Check if 7z/rar archive exists for this date
           const std::string archive_path = PathUtils::generate_archive_path(l2_archive_base, date_str);
           if (std::filesystem::exists(archive_path)) {
             dates.push_back(date_str);
@@ -227,7 +227,7 @@ public:
 
     // Extract CSV files from archive - use unique directory per asset to avoid race conditions
     const std::string temp_extract_dir = temp_base_dir + "/extract_tmp_" + asset_code;
-    if (!FileManager::extract_asset_csv_from_7z(archive_path, asset_code, temp_extract_dir)) {
+    if (!FileManager::extract_asset_csv(archive_path, asset_code, temp_extract_dir)) {
       return false; // Archive doesn't exist or extraction failed
     }
 
@@ -464,7 +464,7 @@ int main() {
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << "\n";
     std::cerr << "Make sure all configuration files exist and contain valid data.\n";
-    std::cerr << "Also ensure 7z command is available and archive files exist at the specified path.\n";
+    std::cerr << "Also ensure 7z/rar command is available and archive files exist at the specified path.\n";
     return 1;
   }
 }
