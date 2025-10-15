@@ -39,7 +39,7 @@ set(ZSTD_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../../package/zstd-1.5.7/libzstd.a
 # Source files
 set(SOURCES
     ../../src/codec/json_config.cpp
-    ../../src/codec/binary_decoder_L1.cpp
+    # ../../src/codec/binary_decoder_L1.cpp
     ../../src/codec/binary_decoder_L2.cpp
     ../../src/codec/binary_encoder_L2.cpp
     ../../src/misc/logging.cpp
@@ -57,7 +57,7 @@ set(HEADERS
     ../../include/misc/logging.hpp
     ../../include/define/CBuffer.hpp
     ../../include/codec/json_config.hpp
-    ../../include/codec/binary_decoder_L1.hpp
+    # ../../include/codec/binary_decoder_L1.hpp
     ../../include/codec/binary_decoder_L2.hpp
     ../../include/codec/binary_encoder_L2.hpp
     ../../include/codec/delta_encoding.hpp

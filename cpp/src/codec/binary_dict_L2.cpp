@@ -1,6 +1,7 @@
 #include "codec/binary_dict_L2.hpp"
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iomanip>

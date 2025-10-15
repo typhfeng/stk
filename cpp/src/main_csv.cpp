@@ -136,12 +136,12 @@ public:
   static bool decode_binary_files(const std::string &snapshots_file, const std::string &orders_file, L2::BinaryDecoder_L2 &decoder, AnalysisHighFrequency *HFA_) {
     bool decode_success = true;
 
-    if (!snapshots_file.empty()) {
-      std::vector<L2::Snapshot> decoded_snapshots;
-      decode_success &= decoder.decode_snapshots(snapshots_file, decoded_snapshots);
-      // decoder.print_all_snapshots(decoded_snapshots);
-      // exit(1);
-    }
+    // if (!snapshots_file.empty()) {
+    //   std::vector<L2::Snapshot> decoded_snapshots;
+    //   decode_success &= decoder.decode_snapshots(snapshots_file, decoded_snapshots);
+    //   // decoder.print_all_snapshots(decoded_snapshots);
+    //   // exit(1);
+    // }
 
     if (!orders_file.empty()) {
       std::vector<L2::Order> decoded_orders;
@@ -151,7 +151,6 @@ public:
       if (HFA_) {
         for (const auto &ord : decoded_orders) {
           HFA_->process(ord);
-          // lob->TA_->ProcessSingleSnapshot(ord);
         }
         HFA_->clear();
       }

@@ -20,8 +20,8 @@
 #include "math/sample/ResampleRunBar.hpp"
 
 #define PRINT_DEBUG 0
-#define PRINT_BOOK 0
-#define SINGLE_DAY 0
+#define PRINT_BOOK 1
+#define SINGLE_DAY 1
 
 // 我们采用方案2: 抵扣模型 (simple & robust)
 //
