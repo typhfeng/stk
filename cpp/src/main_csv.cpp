@@ -307,12 +307,12 @@ public:
     bool decode_success = true;
     (void)snapshots_file; // Reserved for future snapshot processing
 
-    // Decode snapshots (currently disabled, enable when needed)
-    if (!snapshots_file.empty()) {
-      std::vector<L2::Snapshot> decoded_snapshots;
-      decode_success &= decoder.decode_snapshots(snapshots_file, decoded_snapshots);
-      // decoder.print_all_snapshots(decoded_snapshots);
-    }
+    // // Decode snapshots (currently disabled, enable when needed)
+    // if (!snapshots_file.empty()) {
+    //   std::vector<L2::Snapshot> decoded_snapshots;
+    //   decode_success &= decoder.decode_snapshots(snapshots_file, decoded_snapshots);
+    //   // decoder.print_all_snapshots(decoded_snapshots);
+    // }
 
     // Decode orders and process through high-frequency analysis
     if (!orders_file.empty()) {
