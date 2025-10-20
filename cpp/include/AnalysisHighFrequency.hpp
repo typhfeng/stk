@@ -25,157 +25,305 @@
 //========================================================================================
 
 // Debug switches
-#define DEBUG_ORDER_PRINT 0        // Print every order processing
-#define DEBUG_BOOK_PRINT 1         // Print order book snapshot
-#define DEBUG_BOOK_BY_SECOND 1     // 0: by tick, 1: every 1 second, 2: every 2 seconds, ...
-#define DEBUG_BOOK_AS_AMOUNT 1     // 0: 手, 1: 1万元, 2: 2万元, 3: 3万元, ...
-#define DEBUG_ANOMALY_PRINT 1      // Print max unmatched order with creation timestamp
-#define DEBUG_DEFERRED_ENQUEUE 1   // Print when order is enqueued (入队) to deferred_queue_
-#define DEBUG_DEFERRED_FLUSH 1     // Print when order is flushed (出队/处理) from deferred_queue_
-#define DEBUG_SINGLE_DAY 1         // Exit after processing one day
+#define DEBUG_ORDER_PRINT 0         // Print every order processing
+#define DEBUG_BOOK_PRINT 1          // Print order book snapshot
+#define DEBUG_BOOK_BY_SECOND 1      // 0: by tick, 1: every 1 second, 2: every 2 seconds, ...
+#define DEBUG_BOOK_AS_AMOUNT 1      // 0: 手, 1: 1万元, 2: 2万元, 3: 3万元, ...
+#define DEBUG_ANOMALY_PRINT 1       // Print max unmatched order with creation timestamp
+#define DEBUG_ORDER_FLAGS_CREATE 1  // Print when order with special flags is created
+#define DEBUG_ORDER_FLAGS_RESOLVE 1 // Print when order with special flags is resolved/migrated
+#define DEBUG_SINGLE_DAY 1          // Exit after processing one day
 
 // Trading session time points (China A-share market)
 namespace TradingSession {
-  // Morning call auction (集合竞价)
-  constexpr uint8_t MORNING_CALL_AUCTION_START_HOUR = 9;
-  constexpr uint8_t MORNING_CALL_AUCTION_START_MINUTE = 15;
-  constexpr uint8_t MORNING_CALL_AUCTION_END_MINUTE = 25;
-  
-  // Morning matching period (集合竞价撮合期)
-  constexpr uint8_t MORNING_MATCHING_START_MINUTE = 25;
-  constexpr uint8_t MORNING_MATCHING_END_MINUTE = 30;
-  
-  // Continuous auction (连续竞价)
-  constexpr uint8_t CONTINUOUS_TRADING_START_HOUR = 9;
-  constexpr uint8_t CONTINUOUS_TRADING_START_MINUTE = 30;
-  constexpr uint8_t CONTINUOUS_TRADING_END_HOUR = 15;
-  constexpr uint8_t CONTINUOUS_TRADING_END_MINUTE = 0;
-  
-  // Closing call auction (收盘集合竞价 - Shenzhen only)
-  constexpr uint8_t CLOSING_CALL_AUCTION_START_HOUR = 14;
-  constexpr uint8_t CLOSING_CALL_AUCTION_START_MINUTE = 57;
-  constexpr uint8_t CLOSING_CALL_AUCTION_END_HOUR = 15;
-  constexpr uint8_t CLOSING_CALL_AUCTION_END_MINUTE = 0;
-}
+// Morning call auction (集合竞价)
+constexpr uint8_t MORNING_CALL_AUCTION_START_HOUR = 9;
+constexpr uint8_t MORNING_CALL_AUCTION_START_MINUTE = 15;
+constexpr uint8_t MORNING_CALL_AUCTION_END_MINUTE = 25;
+
+// Morning matching period (集合竞价撮合期)
+constexpr uint8_t MORNING_MATCHING_START_MINUTE = 25;
+constexpr uint8_t MORNING_MATCHING_END_MINUTE = 30;
+
+// Continuous auction (连续竞价)
+constexpr uint8_t CONTINUOUS_TRADING_START_HOUR = 9;
+constexpr uint8_t CONTINUOUS_TRADING_START_MINUTE = 30;
+constexpr uint8_t CONTINUOUS_TRADING_END_HOUR = 15;
+constexpr uint8_t CONTINUOUS_TRADING_END_MINUTE = 0;
+
+// Closing call auction (收盘集合竞价 - Shenzhen only)
+constexpr uint8_t CLOSING_CALL_AUCTION_START_HOUR = 14;
+constexpr uint8_t CLOSING_CALL_AUCTION_START_MINUTE = 57;
+constexpr uint8_t CLOSING_CALL_AUCTION_END_HOUR = 15;
+constexpr uint8_t CLOSING_CALL_AUCTION_END_MINUTE = 0;
+} // namespace TradingSession
 
 // LOB visualization parameters
 namespace BookDisplay {
-  constexpr size_t MAX_DISPLAY_LEVELS = 10;  // Number of price levels to display
-  constexpr size_t LEVEL_WIDTH = 12;         // Width for each price level display
-}
+constexpr size_t MAX_DISPLAY_LEVELS = 10; // Number of price levels to display
+constexpr size_t LEVEL_WIDTH = 12;        // Width for each price level display
+} // namespace BookDisplay
 
 // Anomaly detection parameters
 namespace AnomalyDetection {
-  constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5;  // Minimum distance from TOB to check anomalies
+constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to check anomalies
 }
 
 //========================================================================================
-// ORDER TYPE PROCESSING COMPARISON TABLE
+// CORE ARCHITECTURE: ORDER-CENTRIC LOB WITH ADAPTIVE PLACEMENT
 //========================================================================================
 //
-// ┌─────────────────────────┬──────────────────────────────┬──────────────────────────────┬──────────────────────────────┐
-// │ Dimension               │ MAKER (Creator·Consumer)     │ TAKER (Counterparty·TOB)     │ CANCEL (Self·Shenzhen no px) │
-// ├─────────────────────────┼──────────────────────────────┼──────────────────────────────┼──────────────────────────────┤
-// │ target_id               │ Self ID                      │ Counterparty ID (reversed!)  │ Self ID                      │
-// │ signed_volume           │ BID: +  ASK: -               │ BID: +  ASK: -               │ BID: -  ASK: +               │
-// ├─────────────────────────┼──────────────────────────────┼──────────────────────────────┼──────────────────────────────┤
-// │ order_lookup_ access    │ [Write] Create/Update Loc    │ [R/W] Update/Erase Loc       │ [R/W] Update/Erase Loc       │
-// │ deferred_queue_         │ [Read+Del] Check & flush     │ [Write] If not found         │ [Write] If not found         │
-// │ order_memory_pool_      │ [Alloc] Common               │ [-] Rare (out-of-order)      │ [-] Rare (out-of-order)      │
-// │ level_storage_          │ [Create] May create Level    │ [-] Never                    │ [-] Never                    │
-// │ visible_price_bitmap_   │ add/remove                   │ May remove                   │ May remove                   │
-// │ best_bid_/best_ask_     │ [-]                          │ [YES] Update TOB             │ [-]                          │
-// ├─────────────────────────┼──────────────────────────────┼──────────────────────────────┼──────────────────────────────┤
-// │ Level::net_quantity     │ Increase (+/-)               │ Decrease                     │ Decrease                     │
-// │ When order found        │ qty += signed_vol (merge)    │ qty += signed_vol (deduct C) │ qty += signed_vol (deduct S) │
-// │ When order NOT found    │ Flush deferred + Create      │ Enqueue to deferred          │ Enqueue to deferred          │
-// │ price=0 handling        │ Defer to queue (special)     │ Use level->price             │ Common (SZ), use level->price│
-// ├─────────────────────────┼──────────────────────────────┼──────────────────────────────┼──────────────────────────────┤
-// │ Hash lookups (hot path) │ 1x (order_lookup_ only)      │ 1x (order_lookup_ only)      │ 1x (order_lookup_ only)      │
-// │ Hash lookups (deferred) │ 2x (+ deferred_queue_)       │ 2x (+ deferred_queue_)       │ 2x (+ deferred_queue_)       │
-// │ Typical probability     │ 98% hot path, 2% deferred    │ 98% hot path, 2% deferred    │ 95% hot path, 5% deferred    │
-// ├─────────────────────────┼──────────────────────────────┼──────────────────────────────┼──────────────────────────────┤
-// │ Core characteristics    │ Create order, consume defer, │ Operate counterparty, prod   │ Operate self, produce defer, │
-// │                         │ allocate memory (creator)    │ defer, update TOB (reversed!)│ no price (Shenzhen special)  │
-// └─────────────────────────┴──────────────────────────────┴──────────────────────────────┴──────────────────────────────┘
+// 设计理念: 抵扣模型 + Order迁移机制
+// --------------------------------------------------------------------------------
+// - TAKER成交价是最终真相, MAKER挂价可能不准确
+// - 所有Order都存在于某个Level中 (包括Level[0]特殊档位)
+// - Order携带flags标记状态, 支持在Level间迁移(因为某些原因修改)
+// - 通过order_lookup_全局索引实现O(1)定位和迁移
+//
+//========================================================================================
+// CORE DATA STRUCTURES
+//========================================================================================
+//
+// 1. order_lookup_: unordered_map<OrderId, Location>
+//    - O(1)全局索引, 任何Order都能快速定位到(Level*, index)
+//    - 支持Order在不同Level间迁移后更新Location
+//
+// 2. price_levels_: unordered_map<Price, Level*>
+//    - 价格到Level的映射, 快速找到任意价格档位
+//    - Level[0]是特殊档位, 存放price=0的订单
+//
+// 3. Level: 价格档位, 内部维护Order队列
+//    - vector<Order*> orders: FIFO队列 (时间优先)
+//    - Quantity net_quantity: 缓存的总量 (正=买压, 负=卖压)
+//    - operations: add(), remove(), refresh_total()
+//
+// 4. Order: 订单对象 (在order_memory_pool_中分配)
+//    - Quantity qty: 有符号数量 (正=买方增加/卖方减少, 负=买方减少/卖方增加)
+//    - OrderId id: 订单唯一标识
+//    - OrderFlags flags: 订单状态标记
+//
+// Order Flags (订单状态标记):
+// --------------------------------------------------------------------------------
+// enum class OrderFlags : uint8_t {
+//   NORMAL,          // 正常订单 (价格方向都确定且匹配)
+//   UNKNOWN,         // 未知类型 (信息不足, 暂时标记)
+//   OUT_OF_ORDER,    // 乱序到达 (TAKER/CANCEL先于MAKER)
+//   CALL_AUCTION,    // 集合竞价订单 (价格可能不是最终成交价)
+//   SPECIAL_MAKER,   // 特殊挂单 (price=0的市价单等)
+//   ZERO_PRICE,      // 零价格订单 (CANCEL等, price=0)
+//   ANOMALY_MATCH    // 异常撮合 (连续竞价时价格/方向不匹配)
+// };
+// (Actual definition below in CONSTANTS AND TYPES section)
+//
+// Level[0] 特殊档位:
+// --------------------------------------------------------------------------------
+// - 存放price=0的订单: SPECIAL_MAKER, ZERO_PRICE, UNKNOWN等
+// - 数量极少(<0.1%总订单数), 通常<10个订单
+// - O(n)遍历开销可忽略
+// - 统一接口: Level[0]和其他Level使用相同的操作(add/remove/move)
+//
+//========================================================================================
+// CORNER CASES SUMMARY
+//========================================================================================
+//
+// 交易所逐笔数据存在多种corner cases (总计~5% orders):
+//
+// 1. OUT_OF_ORDER (乱序到达) - ~2-5%
+//    - TAKER/CANCEL先于对应MAKER到达
+//    - 预创建Order, MAKER到达后抵扣
+//
+// 2. CALL_AUCTION (集合竞价) - 9:15-9:30, 14:57-15:00
+//    - MAKER挂价 ≠ 最终撮合价 (统一竞价撮合价)
+//    - TAKER到达时按成交价迁移Order
+//
+// 3. SPECIAL_MAKER (特殊挂单) - ~1-2%
+//    - 市价单('1'), 本方最优('U')等price=0的订单
+//    - 存放于Level[0], TAKER到达时迁移到成交价
+//
+// 4. ZERO_PRICE_CANCEL (深交所零价格撤单) - ~5-10% of cancels
+//    - 深交所撤单无价格信息(price=0)
+//    - 存放于Level[0], MAKER到达时迁移到挂单价
+//
+// 5. ANOMALY_MATCH (异常撮合) - rare
+//    - 连续竞价时, MAKER挂价 ≠ TAKER成交价 (非集合竞价)
+//    - 可能是盘中算法单等特殊撮合规则
+//    - 按TAKER成交价迁移Order, 标记flags=ANOMALY_MATCH
+//
+// 6. UNKNOWN (信息不足) - temporary
+//    - 无法确定订单类型时的暂时状态
+//    - 等待后续数据澄清
+//
+// 统一解决方案: Order迁移机制
+// --------------------------------------------------------------------------------
+// - 初始放置: 根据已知信息将Order放入Level (可能不准确)
+// - 触发迁移: 当新数据到达, 发现Order价格不匹配时
+// - 执行迁移: move_order_between_levels(id, correct_price)
+// - 更新状态: 修改flags为最终确定的状态
+//
+//========================================================================================
+// ORDER PROCESSING FLOW (3 ORDER TYPES)
+//========================================================================================
+//
+// ┌─────────────────────────────────────────────────────────────────────────────────┐
+// │ MAKER FLOW (创建挂单)                                                            │
+// └─────────────────────────────────────────────────────────────────────────────────┘
+//
+// 1. 确定初始放置位置和flags:
+//    ┌─ price=0?           → Level[0],     flags=SPECIAL_MAKER
+//    ├─ 集合竞价期?        → Level[price], flags=CALL_AUCTION
+//    └─ 连续竞价正常       → Level[price], flags=NORMAL
+//
+// 2. 检查order_lookup_[id]:
+//    ├─ 已存在 (OUT_OF_ORDER: TAKER/CANCEL先到)
+//    │  ├─ Order在Level[X], MAKER要求Level[Y], X≠Y?
+//    │  │  └─ move_order_between_levels(id, Y)
+//    │  └─ apply_volume_change(抵扣qty, 更新flags)
+//    │
+//    └─ 不存在 (正常情况)
+//       └─ apply_volume_change(创建新Order, 设置flags)
+//
+// ┌─────────────────────────────────────────────────────────────────────────────────┐
+// │ TAKER FLOW (成交)                                                               │
+// └─────────────────────────────────────────────────────────────────────────────────┘
+//
+// 1. 处理对手单 (counterparty_id):
+//    ├─ 通过order_lookup_查找
+//    │
+//    ├─ 找到Order
+//    │  ├─ Order在Level[X], TAKER成交价=Y, X≠Y?
+//    │  │  ├─ move_order_between_levels(id, Y)
+//    │  │  └─ 连续竞价 && 价格不匹配? → flags=ANOMALY_MATCH
+//    │  │
+//    │  ├─ apply_volume_change(抵扣qty)
+//    │  └─ update_tob_after_trade()
+//    │
+//    └─ 未找到Order (OUT_OF_ORDER)
+//       └─ apply_volume_change(预创建Order, flags=OUT_OF_ORDER)
+//
+// 2. 处理己方单 (self_order_id, 如果存在且≠counterparty_id):
+//    ├─ 集合竞价双边撮合: 己方也是MAKER, 同时抵扣
+//    ├─ 市价单立即成交: 己方MAKER在Level[0], 迁移并清理
+//    └─ 通过order_lookup_查找并抵扣
+//
+// ┌─────────────────────────────────────────────────────────────────────────────────┐
+// │ CANCEL FLOW (撤单)                                                              │
+// └─────────────────────────────────────────────────────────────────────────────────┘
+//
+// 1. 通过order_lookup_查找self_id:
+//    ├─ 找到Order
+//    │  ├─ Order在Level[0] && CANCEL有价格?
+//    │  │  └─ move_order_between_levels(id, cancel_price)
+//    │  │
+//    │  └─ apply_volume_change(抵扣qty, CANCEL的signed_volume为负)
+//    │
+//    └─ 未找到Order (OUT_OF_ORDER或ZERO_PRICE)
+//       ├─ price=0? → Level[0], flags=ZERO_PRICE
+//       └─ price≠0? → Level[price], flags=OUT_OF_ORDER
+//
+//========================================================================================
+// ORDER MIGRATION MECHANISM (核心机制)
+//========================================================================================
+//
+// move_order_between_levels(OrderId id, Price new_price):
+//   1. 通过order_lookup_[id]快速定位Order当前位置 (Level*, index)
+//   2. 从旧Level移除Order (swap-and-pop, 更新被swap的Order的index)
+//   3. 添加Order到新Level (push_back, 分配新index)
+//   4. 更新order_lookup_[id] = Location(new_level, new_index)
+//   5. 维护visible_price_bitmap_ (旧/新Level的可见性)
+//   6. 清理空Level
+//
+// 迁移触发时机:
+//   - TAKER到达: 对手Order价格 ≠ TAKER成交价
+//   - MAKER到达: 找到earlier TAKER/CANCEL, 但价格不匹配
+//   - CANCEL到达: Order在Level[0]但CANCEL有价格
+//
+// 迁移复杂度: O(1)
+//   - order_lookup_提供O(1)查找
+//   - Level操作(remove/add)均为O(1)
+//   - swap-and-pop不需要移动大量数据
+//
+//========================================================================================
+// SPECIAL HANDLING: CALL AUCTION (集合竞价)
+//========================================================================================
+//
+// 9:15-9:25 集合竞价期:
+//   - MAKER: 创建到Level[报价], flags=CALL_AUCTION
+//   - TAKER: 暂无 (集合竞价期不产生成交)
+//
+// 9:25-9:30 集合竞价撮合期:
+//   - MAKER: 继续创建到Level[报价], flags=CALL_AUCTION
+//   - TAKER: 按统一撮合价成交
+//     → 找到对手MAKER, 若价格不匹配则迁移
+//     → 抵扣qty, 更新flags=NORMAL
+//
+// 9:30:00 连续竞价开始:
+//   - flush_call_auction_flags(): 遍历所有Order, 清除flags=CALL_AUCTION
+//   - 剩余MAKER按原挂单价继续挂牌 (已在Level[挂单价], 无需搬运)
+//
+// 14:57-15:00 收盘集合竞价(深圳):
+//   - 处理逻辑同开盘集合竞价
+//
+//========================================================================================
+// PERFORMANCE CHARACTERISTICS
+//========================================================================================
+//
+// Hot Path (95%+ orders): 正常连续竞价, 价格匹配
+// --------------------------------------------------------------------------------
+// MAKER:  1x hash lookup (order_lookup_) + create Order     → O(1)
+// TAKER:  1x hash lookup (order_lookup_) + deduct Order     → O(1)
+// CANCEL: 1x hash lookup (order_lookup_) + deduct Order     → O(1)
+//
+// Cold Path (5%- orders): Corner cases, 需要迁移或特殊处理
+// --------------------------------------------------------------------------------
+// OUT_OF_ORDER:    1x hash + possible move                  → O(1)
+// CALL_AUCTION:    1x hash + possible move                  → O(1)
+// SPECIAL_MAKER:   1x hash + move from Level[0]             → O(1)
+// ZERO_PRICE:      1x hash + move from Level[0]             → O(1)
+// ANOMALY_MATCH:   1x hash + move + flag update             → O(1)
+// Level[0] scan:   O(n) where n < 10 typically              → negligible
+//
+// Memory:
+// --------------------------------------------------------------------------------
+// - 所有Order统一存储于Levels, 无额外队列
+// - order_lookup_提供O(1)全局索引
+// - 内存占用: ~16 bytes/Order (compact design)
+//
+//========================================================================================
+// SCENARIO TABLE (UNIFIED)
+//========================================================================================
+//
+// ┌──────────────┬─────────────┬──────────────────────┬──────────────────────┬─────────────────┐
+// │ Scenario     │ Order Type  │ Initial Placement    │ Trigger Event        │ Final State     │
+// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
+// │ NORMAL       │ MAKER       │ Level[price]         │ TAKER matches        │ Deducted/Erased │
+// │              │ TAKER       │ Find & deduct        │ -                    │ Counterparty ↓  │
+// │              │ CANCEL      │ Find & deduct        │ -                    │ Self order ↓    │
+// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
+// │ OUT_OF_ORDER │ TAKER first │ Level[trade_price]   │ MAKER arrives        │ Deducted/Moved  │
+// │              │             │ flags=OUT_OF_ORDER   │ → Find & deduct      │ → flags=NORMAL  │
+// │              │ CANCEL first│ Level[cancel_price]  │ MAKER arrives        │ Deducted/Moved  │
+// │              │             │ flags=OUT_OF_ORDER   │ → Find & deduct      │ → flags=NORMAL  │
+// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
+// │ CALL_AUCTION │ MAKER       │ Level[report_price]  │ TAKER matches        │ Moved if needed │
+// │ (9:15-9:30)  │             │ flags=CALL_AUCTION   │ → Check price match  │ → flags=NORMAL  │
+// │              │             │                      │ 9:30: Clear flags    │ Stay in Level   │
+// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
+// │ SPECIAL_MAKER│ MAKER (p=0) │ Level[0]             │ TAKER matches        │ Move to Level[p]│
+// │              │             │ flags=SPECIAL_MAKER  │ → Move to trade_px   │ → Deduct/Erase  │
+// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
+// │ ZERO_PRICE   │ CANCEL(p=0) │ Level[0]             │ MAKER arrives        │ Move to Level[p]│
+// │              │             │ flags=ZERO_PRICE     │ → Move to maker_px   │ → Deduct        │
+// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
+// │ ANOMALY_MATCH│ MAKER       │ Level[report_price]  │ TAKER (px mismatch)  │ Move to trade_px│
+// │ (Continuous) │             │ flags=NORMAL         │ !call_auction        │ → ANOMALY_MATCH │
+// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
+// │ UNKNOWN      │ Any (p=0)   │ Level[0]             │ More data arrives    │ Clarify & Move  │
+// │              │             │ flags=UNKNOWN        │ → Update flags       │ or Cleanup      │
+// └──────────────┴─────────────┴──────────────────────┴──────────────────────┴─────────────────┘
 //
 //========================================================================================
 
-// 我们采用抵扣模型 + 统一延迟队列 (simple & robust & performant)
-//
-//========================================================================================
-// 数据问题与corner cases:
-//========================================================================================
-// 1. 乱序 (Out-of-Order): 同一ms内(甚至不同时刻间), order之间可能为乱序
-//    - TAKER/CANCEL可能先于对应MAKER到达 (~2-5%概率)
-// 2. 集合竞价 (Call Auction): 9:15-9:30, 14:57-15:00期间MAKER需特殊处理
-//    - 9:15-9:25: 集合竞价期, MAKER报价不是真实成交价
-//    - 9:25-9:30: 集合竞价撮合期, TAKER在队列中找MAKER抵扣
-//    - 9:30:00: 剩余MAKER按挂单价flush到LOB
-// 3. 特殊挂单 (Special MAKER): 市价单('1')和本方最优('U')可能无价格 (price=0)
-//    - 需等待TAKER提供成交价 (~1-2%概率)
-// 4. 零价格撤单 (Zero-Price Cancel): 深交所撤单无价格信息 (price=0)
-//    - 需等待MAKER提供价格或使用LOB现有价格 (~5-10%撤单概率)
-// 5. 快照异步 (Snapshot Async): 快照的时间点不确定, 只能作为模糊矫正
-// 6. 数据丢失 (Data Loss): order信息可能丢失 (交易所问题, 无法修复)
-//
-//========================================================================================
-// 核心设计: 抵扣模型 + 统一延迟队列
-//========================================================================================
-//
-// 订单处理优先级: deferred_queue_ (Queue优先) > order_lookup_ (LOB) > 特殊处理
-// 原因: 乱序很常见(~2-5%), queue中的订单需要第一时间被处理
-//
-// HOT PATH (96%+ orders): 连续竞价期间正常订单, queue空
-// --------------------------------------------------------
-// - MAKER: 直接创建订单到LOB (order_lookup_仅1次查找)
-// - TAKER: 找到对手MAKER并抵扣 (order_lookup_仅1次查找)
-// - CANCEL: 找到自身MAKER并抵扣 (order_lookup_仅1次查找)
-// - 性能优先: 无额外判断, 无deferred_queue_查找, 最快路径
-//
-// DEFERRED PATH (4%- orders): Corner cases延迟处理
-// --------------------------------------------------------
-// - 统一延迟队列 deferred_queue_: OrderId -> DeferredOrder
-// - 四种延迟原因:
-//   1) OUT_OF_ORDER: TAKER/CANCEL先于MAKER到达 (~2-5%概率)
-//   2) CALL_AUCTION: 集合竞价期间MAKER价格虚假, 等待TAKER提供真实价格或9:30 flush
-//   3) SPECIAL_MAKER: 特殊MAKER(市价单/本方最优)无价格, 等待TAKER提供成交价 (~1-2%概率)
-//   4) ZERO_PRICE_CANCEL: 深交所撤单无价格, 等待MAKER提供价格 (~5-10%撤单概率)
-//
-// - MAKER处理流程:
-//   1. [特殊条件检查] 集合竞价期? → 进queue (CALL_AUCTION)
-//   2. [特殊条件检查] price=0? → 进queue (SPECIAL_MAKER)  
-//   3. [Queue检查] queue中有对手单(TAKER/CANCEL)? → flush并抵扣 → 创建剩余量
-//   4. [正常创建] 直接创建订单到LOB
-//
-// - TAKER处理流程 (统一抵扣模型: 不区分对手单类型):
-//   1. [Queue检查] queue中有对手单? → 从queue消费对手单 (任何reason) → 结束
-//   2. [LOB检查] LOB中有对手单? → 消费对手单 + 更新TOB
-//   3. [乱序处理] 对手单未到达 → 自己进queue等待 (OUT_OF_ORDER)
-//   4. [清理自身] 检查self_order_id是否在queue (特殊市价单清理)
-//
-// - CANCEL处理流程:
-//   1. [Queue检查] queue中有自身订单? → 从queue抵扣 → 结束
-//   2. [LOB检查] LOB中有自身订单? → 正常撤单
-//   3. [乱序处理] 订单未到达 → 自己进queue等待 (OUT_OF_ORDER或ZERO_PRICE_CANCEL)
-//
-// - TOB跟踪 (Top of Book):
-//   1. 不尝试在乱序期间维护精确TOB (交界处可能短暂混乱)
-//   2. ask TOB = 最近买方TAKER成交的对手价格 (吃空则自动顺延)
-//   3. bid TOB = 最近卖方TAKER成交的对手价格 (吃空则自动顺延)
-//   4. 99%+时间TOB准确 (乱序窗口极短)
-//
-// - 集合竞价期间特殊处理:
-//   1. 9:15-9:25: 集合竞价期, MAKER订单价格不一定是最终成交价(一部分统一竞价撮合价,一部分原始挂单价), 放入延迟队列
-//   2. 9:25-9:30: 集合竞价撮合期, TAKER订单带来真实撮合价(统一竞价撮合价), 在延迟队列中找对手抵扣
-//      - MAKER订单继续放入延迟队列(以便TAKER找到对手)
-//      - TAKER订单在延迟队列中查找对应MAKER并抵扣
-//   3. 9:30:00: 连续竞价开始, 将延迟队列中剩余的集合竞价订单按挂单价flush到LOB
-//      - 这些订单是未被撮合价成交的订单, 按其原始挂单价进入LOB继续等待成交
-//   4. 14:57-15:00: 收盘集合竞价(深圳), 处理逻辑相同
-
-// 对于价格档位, 用位图 + 缓存向量的数据结构
-// 对于订单, 用(内存连续)向量 + 哈希表的数据结构
+// Implementation: 价格档位用位图+缓存向量, 订单用内存连续向量+哈希表索引
 
 //========================================================================================
 // CONSTANTS AND TYPES
@@ -193,18 +341,37 @@ using OrderId = uint32_t;
 
 static constexpr uint32_t PRICE_RANGE_SIZE = static_cast<uint32_t>(UINT16_MAX) + 1; // 0-65535
 
-// Ultra-compact order entry - cache-optimized
+// Order flags enumeration - track order state and corner cases
+enum class OrderFlags : uint8_t {
+  NORMAL,        // Normal order (price and direction match, fully confirmed)
+  UNKNOWN,       // Unknown type (insufficient information, temporary state)
+  OUT_OF_ORDER,  // Out-of-order arrival (TAKER/CANCEL arrived before MAKER)
+  CALL_AUCTION,  // Call auction order (price may not be final trade price)
+  SPECIAL_MAKER, // Special MAKER (price=0, market order, etc.)
+  ZERO_PRICE,    // Zero-price order (CANCEL with price=0, Shenzhen exchange)
+  ANOMALY_MATCH  // Anomaly match (continuous trading, price/direction mismatch)
+};
+
+// Ultra-compact order entry - cache-optimized with flags
 #if DEBUG_ANOMALY_PRINT
 struct alignas(16) Order {
   Quantity qty;
   OrderId id;
   uint32_t timestamp; // Creation timestamp for debug only
-  Order(Quantity q, OrderId i, uint32_t ts) : qty(q), id(i), timestamp(ts) {}
+  OrderFlags flags;   // Order state/type flags
+  uint8_t padding[3]; // Explicit padding for alignment
+
+  Order(Quantity q, OrderId i, uint32_t ts, OrderFlags f = OrderFlags::NORMAL)
+      : qty(q), id(i), timestamp(ts), flags(f) {}
 #else
-struct alignas(8) Order {
+struct alignas(16) Order {
   Quantity qty;
   OrderId id;
-  Order(Quantity q, OrderId i) : qty(q), id(i) {}
+  OrderFlags flags;   // Order state/type flags
+  uint8_t padding[7]; // Explicit padding for alignment
+
+  Order(Quantity q, OrderId i, OrderFlags f = OrderFlags::NORMAL)
+      : qty(q), id(i), flags(f) {}
 #endif
   // Fast operations - always inline
   bool is_positive() const { return qty > 0; }
@@ -268,35 +435,6 @@ struct Location {
   Location(Level *l, size_t i) : level(l), index(i) {}
 };
 
-// Deferred order reason enumeration
-enum class DeferReason : uint8_t {
-  OUT_OF_ORDER,      // TAKER/CANCEL arrived before MAKER (out-of-order)
-  CALL_AUCTION,      // MAKER during call auction period (9:15-9:30), waiting for TAKER match or flush at 9:30
-  SPECIAL_MAKER,     // MAKER with price=0 (market order '1', best-for-us 'U'), waiting for TAKER to provide price
-  ZERO_PRICE_CANCEL  // CANCEL with price=0 (Shenzhen), waiting for MAKER's price
-};
-
-// Deferred order operation type for debugging
-enum class DeferOp : uint8_t {
-  CONSUME_BY_TAKER,      // TAKER consumed counterparty MAKER from queue (during matching period or out-of-order)
-  CANCEL_SELF,           // CANCEL consumed self MAKER from queue
-  FLUSH_BY_MAKER,        // MAKER arrived and flushed earlier TAKER/CANCEL from queue
-  FLUSH_AT_CONTINUOUS,   // Flush remaining call auction orders to LOB at 9:30:00
-  CLEANUP_SPECIAL        // Cleanup special market order after TAKER trade
-};
-
-// Deferred order information - compact design for corner cases
-struct DeferredOrder {
-  Quantity signed_volume;   // Signed quantity (positive=bid increase/ask decrease, negative=ask increase/bid decrease)
-  Price reported_price;     // Reported price (fake for CALL_AUCTION MAKER, 0 for ZERO_PRICE)
-  uint32_t timestamp;       // Creation timestamp (for debugging)
-  DeferReason reason;       // Defer reason
-  bool is_bid;              // Whether it's a bid order
-  
-  DeferredOrder(Quantity vol, Price price, uint32_t ts, DeferReason r, bool bid)
-      : signed_volume(vol), reported_price(price), timestamp(ts), reason(r), is_bid(bid) {}
-};
-
 //========================================================================================
 // MAIN CLASS
 //========================================================================================
@@ -325,23 +463,25 @@ public:
   [[gnu::hot]] bool process(const L2::Order &order) {
     curr_tick_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
     new_tick_ = curr_tick_ != prev_tick_;
-    
+
+    // Only recompute trading session state when time changes (avoid redundant calculations)
+    if (new_tick_) [[unlikely]] {
+      update_trading_session_state();
+    }
+
     // Check for call auction/matching period transitions and handle deferred orders
     static bool was_in_matching_period = false;
-    
-    bool in_call_auction = is_call_auction_period();
-    bool in_matching_period = is_call_auction_matching_period();
-    
-    // Entering continuous auction (9:30) - flush all remaining call auction orders to LOB
-    if (was_in_matching_period && !in_matching_period && !in_call_auction) [[unlikely]] {
+
+    // Entering continuous auction (9:30) - clear CALL_AUCTION flags
+    if (was_in_matching_period && !in_matching_period_ && !in_call_auction_) [[unlikely]] {
       // Exited matching period, entering continuous auction (9:30:00)
-      // Flush remaining call auction orders to LOB at their reported price
-      flush_call_auction_deferred();
+      // Clear CALL_AUCTION flags from remaining orders (they stay at their current levels)
+      flush_call_auction_flags();
     }
-    
-    was_in_matching_period = in_matching_period;
-    
-    print_book(); // print before updating prev_tick (such that current snapshot is a valid sample)
+
+    was_in_matching_period = in_matching_period_;
+
+    print_book(order); // print before updating prev_tick (such that current snapshot is a valid sample)
     prev_tick_ = curr_tick_;
 
     // Process resampling
@@ -359,300 +499,217 @@ public:
     target_id_ = get_target_id(order);
     if (signed_volume_ == 0 || target_id_ == 0) [[unlikely]]
       return false;
-    
+
 #if DEBUG_ANOMALY_PRINT
     debug_.last_order = order;
 #endif
 
-    // 2. Fast check: are we in call auction period? (cheap time check)
-    const bool in_call_auction = is_call_auction_period();
-    
+    // 2. Use cached trading session state (computed once in process())
     // ========================================================================
-    // HOT PATH OPTIMIZATION: Most orders (98%+) follow the fast path below
+    // HOT PATH OPTIMIZATION: Most orders (95%+) follow the fast path below
     // We minimize branches and hash lookups on this path
     // ========================================================================
-    
+
     // 3. Perform lookup for the incoming order (single hash lookup)
-    auto order_lookup_iterator = order_lookup_.find(target_id_);
-    const bool order_found = (order_lookup_iterator != order_lookup_.end());
-    
+    auto it = order_lookup_.find(target_id_);
+    const bool found = (it != order_lookup_.end());
+
+    // Check if there's self_order that needs special handling (rare case <1%)
+    const bool is_bid = (order.order_dir == L2::OrderDirection::BID);
+    const OrderId self_order_id = is_bid ? order.bid_order_id : order.ask_order_id;
+    const bool has_self_order = (self_order_id != 0 && self_order_id != target_id_);
+
     // ========================================================================
-    // FAST PATH: TAKER/CANCEL with existing MAKER (most common case)
+    // FAST PATH: TAKER/CANCEL with existing order, normal case
     // ========================================================================
-    // Condition: queue is empty + order found in LOB
-    if ((order.order_type == L2::OrderType::TAKER || order.order_type == L2::OrderType::CANCEL) && 
-        order_found && deferred_queue_.empty()) [[likely]] {
-      // HOT PATH: counterparty/self order exists in LOB, no queue to check
-      effective_price_ = order_lookup_iterator->second.level->price;
-      bool was_fully_consumed = apply_volume_change(target_id_, effective_price_, signed_volume_, order_lookup_iterator);
-      
-      if (order.order_type == L2::OrderType::TAKER) {
-        update_tob_after_trade(order, was_fully_consumed, effective_price_);
+    if ((order.order_type == L2::OrderType::TAKER || order.order_type == L2::OrderType::CANCEL) &&
+        found && !in_call_auction_ && !has_self_order) [[likely]] {
+      // HOT PATH: counterparty/self order exists, no special handling needed
+      effective_price_ = it->second.level->price;
+
+      // Check if order is at correct price level
+      if (effective_price_ == order.price) [[likely]] {
+        // Price matches - simple deduction
+        bool was_fully_consumed = apply_volume_change(target_id_, effective_price_, signed_volume_, it);
+
+        if (order.order_type == L2::OrderType::TAKER) {
+          update_tob_after_trade(order, was_fully_consumed, effective_price_);
+        }
+        return true;
       }
-      return true;
+      // Price mismatch - fall through to deferred path for migration
     }
-    
+
     // ========================================================================
-    // FAST PATH: MAKER without deferred records (most common case)
+    // FAST PATH: MAKER without corner cases (most common case)
     // ========================================================================
-    if (order.order_type == L2::OrderType::MAKER && !in_call_auction && deferred_queue_.empty()) [[likely]] {
-      // Check for special MAKER orders with price=0 (market orders, best-for-us orders)
-      // These need to be deferred until matched by counterparty
-      if (order.price == 0) [[unlikely]] {
-        // Special MAKER order with no price - defer to queue
-        return update_lob_deferred(order, order_lookup_iterator, order_found, in_call_auction);
-      }
-      
-      // HOT PATH: normal MAKER in continuous auction, no deferred queue
+    if (order.order_type == L2::OrderType::MAKER && !in_call_auction_ && order.price != 0 && !found) [[likely]] {
+      // HOT PATH: normal MAKER in continuous auction, not found (new order)
       effective_price_ = order.price;
-      apply_volume_change(target_id_, effective_price_, signed_volume_, order_lookup_iterator);
+      apply_volume_change(target_id_, effective_price_, signed_volume_, it, OrderFlags::NORMAL);
       return true;
     }
-    
+
     // ========================================================================
-    // SLOW PATH: Corner cases requiring deferred queue handling
+    // SLOW PATH: Corner cases requiring special handling
     // ========================================================================
-    return update_lob_deferred(order, order_lookup_iterator, order_found, in_call_auction);
+    return update_lob_deferred(order, it, found, in_call_auction_, in_matching_period_);
   };
-  
-  // Deferred path for corner cases (out-of-order, call auction, zero-price)
+
+  // Deferred path for corner cases (out-of-order, call auction, zero-price, anomaly match)
   [[gnu::cold, gnu::noinline]] bool update_lob_deferred(
       const L2::Order &order,
-      std::pmr::unordered_map<OrderId, Location>::iterator order_lookup_iterator,
-      bool order_found,
-      bool in_call_auction) {
-    
-    // Check if there's a deferred record for this order
-    auto deferred_it = deferred_queue_.find(target_id_);
-    const bool has_deferred = (deferred_it != deferred_queue_.end());
-    
+      std::pmr::unordered_map<OrderId, Location>::iterator it,
+      bool found,
+      bool in_call_auction,
+      bool in_matching_period) {
+
     // ========================================================================
     // MAKER ORDER - Deferred Path
     // ========================================================================
     if (order.order_type == L2::OrderType::MAKER) {
-      // Check if we're in call auction or matching period (9:15-9:30)
-      // During both periods, MAKER orders should go to deferred queue
-      const bool in_call_auction_extended = in_call_auction || is_call_auction_matching_period();
-      
-      // CORNER CASE: MAKER with price=0 (special orders: market order, best-for-us)
-      // These orders need to wait in queue for TAKER to provide the matching price
-      if (order.price == 0) [[unlikely]] {
-        if (has_deferred) {
-          // Existing deferred record (likely earlier TAKER/CANCEL) - flush it
-          signed_volume_ += deferred_it->second.signed_volume;
-          const Quantity final_volume = (signed_volume_ == 0) ? 0 : signed_volume_;
-#if DEBUG_DEFERRED_FLUSH
-          print_deferred_dequeue(deferred_it->second, target_id_, final_volume, DeferOp::FLUSH_BY_MAKER);
-#endif
-          deferred_queue_.erase(deferred_it);
-          
-          if (signed_volume_ == 0) {
-            return true; // Fully offset, no order created
-          }
-        }
-        
-        // Put zero-price MAKER into deferred queue, waiting for TAKER to match
-        DeferredOrder deferred_order(signed_volume_, 0, curr_tick_, 
-                                     DeferReason::SPECIAL_MAKER, 
-                                     order.order_dir == L2::OrderDirection::BID);
-        deferred_queue_.emplace(target_id_, deferred_order);
-#if DEBUG_DEFERRED_ENQUEUE
-        print_deferred_enqueue(order, deferred_order);
-#endif
-        return true;
+      // Determine initial placement and flags
+      Price placement_price;
+      OrderFlags flags;
+
+      if (order.price == 0) {
+        // SPECIAL_MAKER: price=0 (market order, best-for-us, etc.)
+        placement_price = 0; // Level[0]
+        flags = OrderFlags::SPECIAL_MAKER;
+      } else if (in_call_auction || in_matching_period) {
+        // CALL_AUCTION: 9:15-9:30, price may not be final trade price
+        placement_price = order.price;
+        flags = OrderFlags::CALL_AUCTION;
+      } else {
+        // NORMAL: continuous auction with known price
+        placement_price = order.price;
+        flags = OrderFlags::NORMAL;
       }
-      
-      if (in_call_auction_extended) {
-        // CORNER CASE: Call auction/matching period - MAKER may need to wait for TAKER
-        // 9:15-9:25: MAKER price may be fake, defer until TAKER arrives
-        // 9:25-9:30: MAKER should also go to queue so TAKER can find and match them
-        if (has_deferred) {
-          // Existing deferred record (likely earlier TAKER/CANCEL) - flush it
-          signed_volume_ += deferred_it->second.signed_volume;
-          const Quantity final_volume = (signed_volume_ == 0) ? 0 : signed_volume_;
-#if DEBUG_DEFERRED_FLUSH
-          print_deferred_dequeue(deferred_it->second, target_id_, final_volume, DeferOp::FLUSH_BY_MAKER);
-#endif
-          deferred_queue_.erase(deferred_it);
-          
-          if (signed_volume_ == 0) {
-            return true; // Fully offset, no order created
-          }
+
+      if (found) {
+        // OUT_OF_ORDER: TAKER/CANCEL arrived first
+        // Order already exists (created by earlier TAKER/CANCEL)
+        Price existing_price = it->second.level->price;
+
+        // Check if we need to migrate the order
+        if (existing_price != placement_price) {
+          // Migrate order to correct level
+          move_order_between_levels(target_id_, placement_price);
+          // Re-fetch iterator after migration
+          it = order_lookup_.find(target_id_);
         }
-        
-        // Put MAKER into deferred queue, waiting for TAKER to match or flush at 9:30
-        DeferredOrder deferred_order(signed_volume_, order.price, curr_tick_, 
-                                     DeferReason::CALL_AUCTION, 
-                                     order.order_dir == L2::OrderDirection::BID);
-        deferred_queue_.emplace(target_id_, deferred_order);
-#if DEBUG_DEFERRED_ENQUEUE
-        print_deferred_enqueue(order, deferred_order);
-#endif
-        return true;
+
+        // Deduct the volume (MAKER adds, earlier TAKER/CANCEL already set opposite volume)
+        apply_volume_change(target_id_, placement_price, signed_volume_, it, flags);
+      } else {
+        // Normal case: create new order
+        apply_volume_change(target_id_, placement_price, signed_volume_, it, flags);
       }
-      
-      // CORNER CASE: Continuous auction with deferred records - flush them
-      if (has_deferred) {
-        signed_volume_ += deferred_it->second.signed_volume;
-        const Quantity final_volume = (signed_volume_ == 0) ? 0 : signed_volume_;
-#if DEBUG_DEFERRED_FLUSH
-        print_deferred_dequeue(deferred_it->second, target_id_, final_volume, DeferOp::FLUSH_BY_MAKER);
-#endif
-        deferred_queue_.erase(deferred_it);
-        
-        if (signed_volume_ == 0) {
-          return true; // Fully offset, no order created
-        }
-      }
-      
-      // Create MAKER order to LOB
-      effective_price_ = order.price;
-      apply_volume_change(target_id_, effective_price_, signed_volume_, order_lookup_iterator);
+
       return true;
     }
-    
+
     // ========================================================================
-    // TAKER ORDER - Deferred Path (Queue优先策略)
+    // TAKER ORDER - Deferred Path
     // ========================================================================
     if (order.order_type == L2::OrderType::TAKER) {
-      // Step 1: Check deferred_queue for counterparty (unified consumption, any reason)
-      if (has_deferred) {
-        // CORNER CASE: Counterparty MAKER in deferred queue - consume it
-        // Reasons: CALL_AUCTION (集合竞价), SPECIAL_MAKER (市价单), or future extensions
-        // We don't distinguish reasons - unified deduction model
-        
-        Quantity maker_volume = deferred_it->second.signed_volume;
-        Quantity net_volume = maker_volume + signed_volume_;
-        
-        // Check if MAKER is fully consumed or over-consumed (sign reversal)
-        const bool fully_consumed = (net_volume == 0) || 
-                                     (maker_volume > 0 && net_volume <= 0) || 
-                                     (maker_volume < 0 && net_volume >= 0);
-        
-        if (fully_consumed) {
-          // MAKER fully consumed - remove from queue
-#if DEBUG_DEFERRED_FLUSH
-          print_deferred_dequeue(deferred_it->second, target_id_, 0, DeferOp::CONSUME_BY_TAKER);
-#endif
-          deferred_queue_.erase(deferred_it);
-        } else {
-          // MAKER partially consumed - update its volume in queue
-#if DEBUG_DEFERRED_FLUSH
-          print_deferred_dequeue(deferred_it->second, target_id_, net_volume, DeferOp::CONSUME_BY_TAKER);
-#endif
-          deferred_it->second.signed_volume = net_volume;
-        }
-        
-        // Trade completed, now check and clean up self order if exists
-        // (Special market order cleanup: market orders enter as MAKER, then trade as TAKER)
-        const bool is_bid = (order.order_dir == L2::OrderDirection::BID);
-        const OrderId self_order_id = is_bid ? order.bid_order_id : order.ask_order_id;
-        
-        if (self_order_id != 0 && self_order_id != target_id_) [[unlikely]] {
-          auto self_deferred_it = deferred_queue_.find(self_order_id);
-          if (self_deferred_it != deferred_queue_.end() && 
-              self_deferred_it->second.reason == DeferReason::SPECIAL_MAKER) [[unlikely]] {
-#if DEBUG_DEFERRED_FLUSH
-            print_deferred_dequeue(self_deferred_it->second, self_order_id, 0, DeferOp::CLEANUP_SPECIAL);
-#endif
-            deferred_queue_.erase(self_deferred_it);
+      const bool is_bid = (order.order_dir == L2::OrderDirection::BID);
+      const OrderId self_id = is_bid ? order.bid_order_id : order.ask_order_id;
+
+      // Step 1: Handle counterparty order (primary match)
+      if (found) {
+        // Counterparty found - check price match
+        Price counterparty_price = it->second.level->price;
+
+        if (counterparty_price != order.price) {
+          // Price mismatch - need to migrate
+          OrderFlags anomaly_flag = OrderFlags::NORMAL;
+
+          // Determine if this is an anomaly
+          if (!in_call_auction && !in_matching_period) {
+            // Continuous trading with price mismatch - ANOMALY_MATCH
+            anomaly_flag = OrderFlags::ANOMALY_MATCH;
+          }
+
+          // Migrate order to correct price level
+          move_order_between_levels(target_id_, order.price);
+          // Re-fetch iterator after migration
+          it = order_lookup_.find(target_id_);
+
+          // Update flags if anomaly (re-fetch order pointer after migration)
+          if (anomaly_flag == OrderFlags::ANOMALY_MATCH && it != order_lookup_.end()) {
+            Order *counterparty_order = it->second.level->orders[it->second.index];
+            counterparty_order->flags = anomaly_flag;
           }
         }
-        
-        return true; // Trade completed
-      }
-      
-      // Step 2: Check LOB for counterparty (normal case when queue is not empty but target not in queue)
-      if (order_found) {
-        // Counterparty exists in LOB - consume it
-        effective_price_ = order_lookup_iterator->second.level->price;
-        bool was_fully_consumed = apply_volume_change(target_id_, effective_price_, signed_volume_, order_lookup_iterator);
+
+        // Deduct volume
+        effective_price_ = order.price;
+        bool was_fully_consumed = apply_volume_change(target_id_, effective_price_, signed_volume_, it);
         update_tob_after_trade(order, was_fully_consumed, effective_price_);
-        
-        // Check and clean up self order if exists (special market order)
-        const bool is_bid = (order.order_dir == L2::OrderDirection::BID);
-        const OrderId self_order_id = is_bid ? order.bid_order_id : order.ask_order_id;
-        
-        if (self_order_id != 0 && self_order_id != target_id_) [[unlikely]] {
-          auto self_deferred_it = deferred_queue_.find(self_order_id);
-          if (self_deferred_it != deferred_queue_.end() && 
-              self_deferred_it->second.reason == DeferReason::SPECIAL_MAKER) [[unlikely]] {
-#if DEBUG_DEFERRED_FLUSH
-            print_deferred_dequeue(self_deferred_it->second, self_order_id, 0, DeferOp::CLEANUP_SPECIAL);
-#endif
-            deferred_queue_.erase(self_deferred_it);
+      } else {
+        // Counterparty not found - OUT_OF_ORDER case
+        // Create placeholder order at trade price
+        effective_price_ = order.price;
+        apply_volume_change(target_id_, effective_price_, signed_volume_, it, OrderFlags::OUT_OF_ORDER);
+      }
+
+      // Step 2: Handle self order (bilateral consumption in call auction or market orders)
+      if (self_id != 0 && self_id != target_id_) [[unlikely]] {
+        auto self_it = order_lookup_.find(self_id);
+        if (self_it != order_lookup_.end()) {
+          // Self order exists - check if special order needs migration
+          Order *self_order = self_it->second.level->orders[self_it->second.index];
+
+          if (self_order->flags == OrderFlags::SPECIAL_MAKER) {
+            // Market order - migrate to trade price if needed
+            Price self_price = self_it->second.level->price;
+            if (self_price != order.price) {
+              move_order_between_levels(self_id, order.price);
+              self_it = order_lookup_.find(self_id);
+            }
+          }
+
+          // Deduct self order volume
+          if (self_it != order_lookup_.end()) {
+            apply_volume_change(self_id, order.price, -signed_volume_, self_it);
           }
         }
-        
-        return true;
       }
-      
-      // Step 3: Counterparty not found anywhere - out-of-order case
-      // CORNER CASE: TAKER arrived before counterparty MAKER
-      DeferredOrder deferred_order(signed_volume_, order.price, curr_tick_,
-                                   DeferReason::OUT_OF_ORDER,
-                                   order.order_dir == L2::OrderDirection::BID);
-      deferred_queue_.emplace(target_id_, deferred_order);
-#if DEBUG_DEFERRED_ENQUEUE
-      print_deferred_enqueue(order, deferred_order);
-#endif
+
       return true;
     }
-    
+
     // ========================================================================
-    // CANCEL ORDER - Deferred Path (Queue优先策略)
+    // CANCEL ORDER - Deferred Path
     // ========================================================================
     if (order.order_type == L2::OrderType::CANCEL) {
-      // Step 1: Check deferred_queue for self order (any reason)
-      if (has_deferred) {
-        // CORNER CASE: Self MAKER in deferred queue - cancel from queue
-        // Reasons: CALL_AUCTION (集合竞价), SPECIAL_MAKER (市价单), or future extensions
-        // Multiple CANCELs may partially cancel the same MAKER gradually
-        
-        Quantity maker_volume = deferred_it->second.signed_volume;
-        Quantity net_volume = maker_volume + signed_volume_;
-        
-        // Check if MAKER is fully cancelled or over-cancelled (sign reversal)
-        const bool fully_cancelled = (net_volume == 0) || 
-                                      (maker_volume > 0 && net_volume <= 0) || 
-                                      (maker_volume < 0 && net_volume >= 0);
-        
-        if (fully_cancelled) {
-          // Fully cancelled or over-cancelled - remove from queue
-#if DEBUG_DEFERRED_FLUSH
-          print_deferred_dequeue(deferred_it->second, target_id_, 0, DeferOp::CANCEL_SELF);
-#endif
-          deferred_queue_.erase(deferred_it);
-        } else {
-          // Partial cancellation - update deferred quantity in queue
-#if DEBUG_DEFERRED_FLUSH
-          print_deferred_dequeue(deferred_it->second, target_id_, net_volume, DeferOp::CANCEL_SELF);
-#endif
-          deferred_it->second.signed_volume = net_volume;
+      if (found) {
+        // Self order found - normal cancellation
+        Price self_price = it->second.level->price;
+
+        // Check if order is in Level[0] and CANCEL has price
+        if (self_price == 0 && order.price != 0) {
+          // Migrate from Level[0] to actual price
+          move_order_between_levels(target_id_, order.price);
+          it = order_lookup_.find(target_id_);
+          self_price = order.price;
         }
-        return true;
+
+        // Deduct volume
+        apply_volume_change(target_id_, self_price, signed_volume_, it);
+      } else {
+        // Self order not found - OUT_OF_ORDER or ZERO_PRICE case
+        Price placement_price = (order.price == 0) ? 0 : order.price;
+        OrderFlags flags = (order.price == 0) ? OrderFlags::ZERO_PRICE : OrderFlags::OUT_OF_ORDER;
+
+        // Create placeholder order
+        apply_volume_change(target_id_, placement_price, signed_volume_, it, flags);
       }
-      
-      // Step 2: Check LOB for self order (normal case when queue is not empty but target not in queue)
-      if (order_found) {
-        // Self order exists in LOB - normal cancellation
-        effective_price_ = order_lookup_iterator->second.level->price;
-        apply_volume_change(target_id_, effective_price_, signed_volume_, order_lookup_iterator);
-        return true;
-      }
-      
-      // Step 3: Self order not found anywhere - out-of-order or zero-price case
-      // CORNER CASE: CANCEL arrived before self MAKER
-      DeferredOrder deferred_order(signed_volume_, order.price, curr_tick_,
-                                   order.price == 0 ? DeferReason::ZERO_PRICE_CANCEL : DeferReason::OUT_OF_ORDER,
-                                   order.order_dir == L2::OrderDirection::BID);
-      deferred_queue_.emplace(target_id_, deferred_order);
-#if DEBUG_DEFERRED_ENQUEUE
-      print_deferred_enqueue(order, deferred_order);
-#endif
+
       return true;
     }
-    
+
     return false;
   };
 
@@ -675,16 +732,10 @@ public:
   // Book statistics - optimized for performance
   size_t total_orders() const { return order_lookup_.size(); }
   size_t total_levels() const { return price_levels_.size(); }
-  size_t total_deferred() const { return deferred_queue_.size(); }  // Number of deferred orders in corner case queue
-  
-  // Detailed deferred statistics (for debugging)
-  size_t total_deferred_by_reason(DeferReason reason) const {
-    size_t count = 0;
-    for (const auto& [id, order] : deferred_queue_) {
-      if (order.reason == reason) ++count;
-    }
-    return count;
-  }
+  size_t total_level_zero_orders() const {
+    Level *level0 = find_level(0);
+    return level0 ? level0->order_count : 0;
+  } // Number of orders in Level[0] (special cases)
 
   // ========================================================================================
   // PUBLIC INTERFACE - BATCH PROCESSING
@@ -766,7 +817,6 @@ public:
     level_storage_.clear();
     order_lookup_.clear();
     order_memory_pool_.reset();
-    deferred_queue_.clear();  // Clear unified deferred queue
     visible_price_bitmap_.reset(); // O(1) clear all bits
     cached_visible_prices_.clear();
     cache_dirty_ = false;
@@ -776,6 +826,9 @@ public:
     prev_tick_ = 0;
     curr_tick_ = 0;
     new_tick_ = false;
+    in_call_auction_ = false;
+    in_matching_period_ = false;
+    in_continuous_trading_ = false;
     signed_volume_ = 0;
     target_id_ = 0;
     effective_price_ = 0;
@@ -803,30 +856,24 @@ private:
   mutable bool cache_dirty_ = false;                   // Cache needs refresh flag
 
   // Top of book tracking
-  mutable Price best_bid_ = 0;   // Best bid price (highest buy price with visible quantity)
-  mutable Price best_ask_ = 0;   // Best ask price (lowest sell price with visible quantity)
+  mutable Price best_bid_ = 0;    // Best bid price (highest buy price with visible quantity)
+  mutable Price best_ask_ = 0;    // Best ask price (lowest sell price with visible quantity)
   mutable bool tob_dirty_ = true; // TOB needs recalculation flag
 
   // Order tracking infrastructure
-  std::pmr::unsynchronized_pool_resource order_lookup_memory_pool_;  // PMR memory pool for hash map
-  std::pmr::unordered_map<OrderId, Location> order_lookup_;          // OrderId -> Location(Level*, index) for O(1) order lookup
-  MemPool::MemoryPool<Order> order_memory_pool_;                     // Memory pool for Order object allocation
-
-  // Unified deferred queue for corner cases (typically <100 entries, ~0.1% of total orders)
-  // Four defer reasons:
-  // 1. OUT_OF_ORDER: TAKER/CANCEL arrived before MAKER (乱序)
-  // 2. CALL_AUCTION: MAKER during call auction period (9:15-9:30), waiting for TAKER match or 9:30 flush (集合竞价)
-  // 3. SPECIAL_MAKER: MAKER with price=0 (market order/best-for-us), waiting for TAKER to provide price (特殊挂单)
-  // 4. ZERO_PRICE_CANCEL: CANCEL with price=0 (Shenzhen), waiting for MAKER's price (零价格撤单)
-  // Queue is flushed when:
-  //   - Corresponding MAKER/TAKER arrives (for OUT_OF_ORDER and matching in 9:25-9:30)
-  //   - Entering continuous auction at 9:30 (remaining CALL_AUCTION orders flushed to LOB at reported price)
-  std::unordered_map<OrderId, DeferredOrder> deferred_queue_;  // OrderId -> DeferredOrder
+  std::pmr::unsynchronized_pool_resource order_lookup_memory_pool_; // PMR memory pool for hash map
+  std::pmr::unordered_map<OrderId, Location> order_lookup_;         // OrderId -> Location(Level*, index) for O(1) order lookup
+  MemPool::MemoryPool<Order> order_memory_pool_;                    // Memory pool for Order object allocation
 
   // Market timestamp tracking (hour|minute|second|millisecond)
-  uint32_t prev_tick_ = 0;  // Previous tick timestamp
-  uint32_t curr_tick_ = 0;  // Current tick timestamp
-  bool new_tick_ = false;   // Flag: entered new tick
+  uint32_t prev_tick_ = 0; // Previous tick timestamp
+  uint32_t curr_tick_ = 0; // Current tick timestamp
+  bool new_tick_ = false;  // Flag: entered new tick
+
+  // Trading session state cache (computed once per order)
+  bool in_call_auction_ = false;
+  bool in_matching_period_ = false;
+  bool in_continuous_trading_ = false;
 
   // Hot path temporary variable cache to reduce allocation overhead
   mutable Quantity signed_volume_;
@@ -977,12 +1024,13 @@ private:
     }
   }
 
-  // Unified order processing core logic - now accepts lookup iterator from caller
+  // Unified order processing core logic - now accepts lookup iterator from caller and flags
   [[gnu::hot, gnu::always_inline]] bool apply_volume_change(
       OrderId target_id,
       Price price,
       Quantity signed_volume,
-      decltype(order_lookup_.find(target_id)) order_lookup_iterator) {
+      decltype(order_lookup_.find(target_id)) order_lookup_iterator,
+      OrderFlags flags = OrderFlags::NORMAL) {
 
     if (order_lookup_iterator != order_lookup_.end()) {
       // Order exists - modify it
@@ -995,7 +1043,12 @@ private:
       const Quantity new_qty = old_qty + signed_volume;
 
       if (new_qty == 0) {
-        // std::cout << "Order fully consumed: " << target_id << " at price: " << price << " with volume: " << signed_volume << std::endl;
+        // Order fully consumed - print debug info before removal
+#if DEBUG_ORDER_FLAGS_RESOLVE
+        if (target_order->flags != OrderFlags::NORMAL) {
+          print_order_flags_resolve(target_id, price, price, old_qty, 0, target_order->flags, OrderFlags::NORMAL, "CONSUME   ");
+        }
+#endif
 
         // Order fully consumed - remove completely
         target_level->remove(order_index);
@@ -1021,16 +1074,27 @@ private:
         // Partial update
         target_level->net_quantity += signed_volume;
         target_order->qty = new_qty;
+
+        // Update flags if provided
+        OrderFlags old_flags = target_order->flags;
+        if (flags != OrderFlags::NORMAL || target_order->flags != OrderFlags::NORMAL) {
+#if DEBUG_ORDER_FLAGS_RESOLVE
+          if (old_flags != flags) {
+            print_order_flags_resolve(target_id, price, price, old_qty, new_qty, old_flags, flags, "UPDATE_FLG");
+          }
+#endif
+          target_order->flags = flags;
+        }
         update_visible_price(target_level);
         return false; // Partially consumed
       }
 
     } else {
-      // Order doesn't exist - create placeholder
+      // Order doesn't exist - create new order with flags
 #if DEBUG_ANOMALY_PRINT
-      Order *new_order = order_memory_pool_.construct(signed_volume, target_id, curr_tick_);
+      Order *new_order = order_memory_pool_.construct(signed_volume, target_id, curr_tick_, flags);
 #else
-      Order *new_order = order_memory_pool_.construct(signed_volume, target_id);
+      Order *new_order = order_memory_pool_.construct(signed_volume, target_id, flags);
 #endif
       if (!new_order)
         return false;
@@ -1044,6 +1108,11 @@ private:
       target_level->add(new_order);
       order_lookup_.emplace(target_id, Location(target_level, new_order_index));
       update_visible_price(target_level);
+
+#if DEBUG_ORDER_FLAGS_CREATE
+      print_order_flags_create(target_id, price, signed_volume, flags);
+#endif
+
       return false; // New order created
     }
   }
@@ -1091,143 +1160,111 @@ private:
   }
 
   // ========================================================================================
-  // HELPER UTILITIES - CALL AUCTION HANDLING
+  // TRADING SESSION STATE MANAGEMENT
   // ========================================================================================
-  
-  // Check if current time is in call auction period (order collection phase)
-  // Call auction periods: 9:15-9:25 (open), 14:57-15:00 (close, Shenzhen)
-  [[gnu::hot, gnu::always_inline]] inline bool is_call_auction_period() const {
+
+  // Update all trading session state flags in one pass (called only when time changes)
+  // Optimized: extract hour/minute once and compute all flags together
+  [[gnu::hot]] inline void update_trading_session_state() {
     using namespace TradingSession;
     const uint8_t hour = (curr_tick_ >> 24) & 0xFF;
     const uint8_t minute = (curr_tick_ >> 16) & 0xFF;
-    
-    // Morning call auction: 9:15-9:25 (not including 9:25, actual matching at 9:25:00)
-    if (hour == MORNING_CALL_AUCTION_START_HOUR && 
-        minute >= MORNING_CALL_AUCTION_START_MINUTE && 
-        minute < MORNING_CALL_AUCTION_END_MINUTE) return true;
-    
-    // Closing call auction: 14:57-15:00 (Shenzhen only)
-    // Note: Shanghai doesn't have closing call auction
-    // TODO: Add exchange type check if needed
-    if (hour == CLOSING_CALL_AUCTION_START_HOUR && minute >= CLOSING_CALL_AUCTION_START_MINUTE) return true;
-    if (hour == CLOSING_CALL_AUCTION_END_HOUR && minute == CLOSING_CALL_AUCTION_END_MINUTE) return true;
-    
-    return false;
+
+    // Check call auction period: 9:15-9:25 (open), 14:57-15:00 (close, Shenzhen)
+    in_call_auction_ =
+        (hour == MORNING_CALL_AUCTION_START_HOUR &&
+         minute >= MORNING_CALL_AUCTION_START_MINUTE &&
+         minute < MORNING_CALL_AUCTION_END_MINUTE) ||
+        (hour == CLOSING_CALL_AUCTION_START_HOUR && minute >= CLOSING_CALL_AUCTION_START_MINUTE) ||
+        (hour == CLOSING_CALL_AUCTION_END_HOUR && minute == CLOSING_CALL_AUCTION_END_MINUTE);
+
+    // Check matching period: 9:25-9:30
+    in_matching_period_ =
+        (hour == MORNING_CALL_AUCTION_START_HOUR &&
+         minute >= MORNING_MATCHING_START_MINUTE &&
+         minute < MORNING_MATCHING_END_MINUTE);
+
+    // Continuous trading: not in call auction and not in matching period
+    in_continuous_trading_ = !in_call_auction_ && !in_matching_period_;
   }
-  
-  // Check if current time is in call auction matching period (9:25-9:30)
-  // During this period, TAKER orders arrive with real matching price
-  [[gnu::hot, gnu::always_inline]] inline bool is_call_auction_matching_period() const {
-    using namespace TradingSession;
-    const uint8_t hour = (curr_tick_ >> 24) & 0xFF;
-    const uint8_t minute = (curr_tick_ >> 16) & 0xFF;
-    
-    // Morning matching period: 9:25-9:30
-    if (hour == MORNING_CALL_AUCTION_START_HOUR && 
-        minute >= MORNING_MATCHING_START_MINUTE && 
-        minute < MORNING_MATCHING_END_MINUTE) return true;
-    
-    return false;
-  }
-  
-  // Flush deferred call auction orders to LOB at their reported price (9:30:00)
-  // At 9:30, all remaining call auction orders in queue should be flushed to level
-  // using their original reported price (挂单价), not discarded
-  void flush_call_auction_deferred() {
-    auto it = deferred_queue_.begin();
-    while (it != deferred_queue_.end()) {
-      if (it->second.reason == DeferReason::CALL_AUCTION) {
-        const OrderId order_id = it->first;
-        const DeferredOrder& deferred = it->second;
-        
-        // Use the original reported price (挂单价) to flush to level
-        const Price flush_price = deferred.reported_price;
-        const Quantity flush_volume = deferred.signed_volume;
-        
-#if DEBUG_DEFERRED_FLUSH
-        print_deferred_dequeue(deferred, order_id, 0, DeferOp::FLUSH_AT_CONTINUOUS);
+
+  // Flush call auction flags at 9:30:00 - clear CALL_AUCTION flags from all orders
+  // Remaining call auction orders stay in their current levels (at reported price)
+  void flush_call_auction_flags() {
+    for (auto &[price, level] : price_levels_) {
+      for (Order *order : level->orders) {
+        if (order->flags == OrderFlags::CALL_AUCTION) {
+#if DEBUG_ORDER_FLAGS_RESOLVE
+          print_order_flags_resolve(order->id, price, price, order->qty, order->qty, OrderFlags::CALL_AUCTION, OrderFlags::NORMAL, "FLUSH_930 ");
 #endif
-        
-        // Erase from deferred queue first
-        it = deferred_queue_.erase(it);
-        
-        // Flush to LOB at reported price (挂单价)
-        // Check if order already exists in order_lookup_ (unlikely but possible)
-        auto lookup_it = order_lookup_.find(order_id);
-        apply_volume_change(order_id, flush_price, flush_volume, lookup_it);
-      } else {
-        ++it;
+          order->flags = OrderFlags::NORMAL;
+        }
       }
     }
   }
-  
-  // ========================================================================================
-  // DEBUG PRINT FUNCTIONS - UNIFIED INTERFACE
-  // ========================================================================================
-  
-  // Helper: Get reason string for deferred order
-  static const char* get_defer_reason_str(DeferReason reason) {
-    switch (reason) {
-      case DeferReason::OUT_OF_ORDER:      return "OUT_OF_ORDER    ";
-      case DeferReason::CALL_AUCTION:      return "CALL_AUCTION    ";
-      case DeferReason::SPECIAL_MAKER:     return "SPECIAL_MAKER   ";
-      case DeferReason::ZERO_PRICE_CANCEL: return "ZERO_PRICE_CNCL";
-      default:                             return "UNKNOWN         ";
-    }
-  }
-  
-  // Helper: Get operation type string for deferred order dequeue
-  static const char* get_defer_op_str(DeferOp op) {
-    switch (op) {
-      case DeferOp::CONSUME_BY_TAKER:    return "CONSUME_BY_TAKER";
-      case DeferOp::CANCEL_SELF:         return "CANCEL_SELF     ";
-      case DeferOp::FLUSH_BY_MAKER:      return "FLUSH_BY_MAKER  ";
-      case DeferOp::FLUSH_AT_CONTINUOUS: return "FLUSH_AT_930    ";
-      case DeferOp::CLEANUP_SPECIAL:     return "CLEANUP_SPECIAL ";
-      default:                           return "UNKNOWN_OP      ";
-    }
-  }
-  
-#if DEBUG_DEFERRED_ENQUEUE
-  // 🟡 ENQUEUE: Print when order enters deferred_queue_ (Yellow)
-  void print_deferred_enqueue(const L2::Order &order, const DeferredOrder &deferred) const {
-    char type_char = (order.order_type == L2::OrderType::MAKER) ? 'M' : 
-                     (order.order_type == L2::OrderType::TAKER) ? 'T' : 'C';
-    
-    std::cout << "\033[33m[DEFER_ENQ] " << format_time() 
-              << " | " << get_defer_reason_str(deferred.reason)
-              << " | Type=" << type_char
-              << " Dir=" << (deferred.is_bid ? 'B' : 'S')
-              << " ID=" << std::setw(7) << std::right << target_id_
-              << " Price=" << std::setw(5) << std::right << deferred.reported_price
-              << " SignedVol=" << std::setw(6) << std::right << deferred.signed_volume
-              << " | QueueSize=" << std::setw(3) << std::right << (deferred_queue_.size() + 1)
-              << "\033[0m\n";
-  }
-#endif
-  
-#if DEBUG_DEFERRED_FLUSH
-  // 🔵 DEQUEUE: Print when order is consumed/removed from deferred_queue_ (Blue)
-  // Unified function for all queue operations: consume, cancel, flush, cleanup
-  // - final_volume == 0: completely removed (erase)
-  // - final_volume != 0: partially consumed (update, stays in queue)
-  void print_deferred_dequeue(const DeferredOrder &deferred, OrderId order_id, Quantity final_volume, DeferOp op) const {
-    const char* action = (final_volume == 0) ? "ERASE " : "REDUCE";
-    
-    std::cout << "\033[36m[DEFER_" << action << "] " << format_time() 
-              << " | " << get_defer_op_str(op)
-              << " | " << get_defer_reason_str(deferred.reason)
-              << " | Dir=" << (deferred.is_bid ? 'B' : 'S')
-              << " ID=" << std::setw(7) << std::right << order_id
-              << " Vol=" << std::setw(6) << std::right << deferred.signed_volume
-              << " → " << std::setw(6) << std::right << final_volume
-              << " | QueueSize=" << std::setw(3) << std::right << (deferred_queue_.size() + (final_volume != 0 ? 0 : -1))
-              << "\033[0m\n";
-  }
-#endif
 
   // ========================================================================================
-  // HELPER UTILITIES - TIME FORMATTING
+  // ORDER MIGRATION
+  // ========================================================================================
+
+  // Move order from one level to another (核心新增功能)
+  // This is the key innovation for handling price mismatches
+  void move_order_between_levels(OrderId order_id, Price new_price) {
+    // 1. Find current location via order_lookup_
+    auto it = order_lookup_.find(order_id);
+    if (it == order_lookup_.end())
+      return; // Order not found
+
+    Level *old_level = it->second.level;
+    size_t old_index = it->second.index;
+    Price old_price = old_level->price;
+
+    if (old_price == new_price)
+      return; // Already at correct level
+
+    Order *order = old_level->orders[old_index];
+
+    // 2. Remove from old level (swap-and-pop)
+    old_level->remove(old_index);
+
+    // 3. Update index for swapped order (if any)
+    if (old_index < old_level->orders.size()) {
+      auto moved_order_it = order_lookup_.find(old_level->orders[old_index]->id);
+      if (moved_order_it != order_lookup_.end()) {
+        moved_order_it->second.index = old_index;
+      }
+    }
+
+    // 4. Add to new level
+    Level *new_level = find_level(new_price);
+    if (!new_level) {
+      new_level = create_level(new_price);
+    }
+
+    size_t new_index = new_level->orders.size();
+    new_level->add(order);
+
+    // 5. Update order_lookup_
+    it->second.level = new_level;
+    it->second.index = new_index;
+
+    // 6. Maintain visible price bitmap
+    update_visible_price(old_level);
+    update_visible_price(new_level);
+
+    // 7. Cleanup empty level
+    if (old_level->empty()) {
+      remove_level(old_level);
+    }
+
+    // 8. Print debug info for order migration
+#if DEBUG_ORDER_FLAGS_RESOLVE
+    print_order_flags_resolve(order_id, old_price, new_price, order->qty, order->qty, order->flags, order->flags, "MIGRATE   ");
+#endif
+  }
+
+  // ========================================================================================
+  // TIME UTILITIES
   // ========================================================================================
 
   // Convert packed timestamp to human-readable format
@@ -1247,17 +1284,84 @@ private:
   }
 
   // ========================================================================================
-  // DEBUG INFRASTRUCTURE AND FUNCTIONS
+  // ORDER FLAGS DEBUG UTILITIES
   // ========================================================================================
-#if DEBUG_ANOMALY_PRINT
-  
-  // Debug state storage
-  struct DebugState {
-    L2::Order last_order;
-    std::unordered_set<Price> printed_anomalies;
-  };
-  mutable DebugState debug_;
 
+  // Helper: Get flags string
+  static const char *get_order_flags_str(OrderFlags flags) {
+    switch (flags) {
+    case OrderFlags::NORMAL:
+      return "NORMAL         ";
+    case OrderFlags::UNKNOWN:
+      return "UNKNOWN        ";
+    case OrderFlags::OUT_OF_ORDER:
+      return "OUT_OF_ORDER   ";
+    case OrderFlags::CALL_AUCTION:
+      return "CALL_AUCTION   ";
+    case OrderFlags::SPECIAL_MAKER:
+      return "SPECIAL_MAKER  ";
+    case OrderFlags::ZERO_PRICE:
+      return "ZERO_PRICE     ";
+    case OrderFlags::ANOMALY_MATCH:
+      return "ANOMALY_MATCH  ";
+    default:
+      return "UNKNOWN_FLAG   ";
+    }
+  }
+
+#if DEBUG_ORDER_FLAGS_CREATE
+  // 🟡 CREATE: Print when order with special flags is created (Yellow)
+  void print_order_flags_create(OrderId order_id, Price price, Quantity qty, OrderFlags flags) const {
+    if (flags == OrderFlags::NORMAL)
+      return; // Skip normal orders
+
+    std::cout << "\033[33m[FLAGS_CREATE] " << format_time()
+              << " | " << get_order_flags_str(flags)
+              << " | ID=" << std::setw(7) << std::right << order_id
+              << " Price=" << std::setw(5) << std::right << price
+              << " Qty=" << std::setw(6) << std::right << qty
+              << " | TotalOrders=" << std::setw(5) << std::right << (total_orders() + 1)
+              << "\033[0m\n";
+  }
+#endif
+
+#if DEBUG_ORDER_FLAGS_RESOLVE
+  // 🔵 RESOLVE: Print when order with special flags is resolved (Blue)
+  // Types: MIGRATE (price change), CONSUME (fully matched), UPDATE_FLAGS (flags changed)
+  void print_order_flags_resolve(OrderId order_id, Price old_price, Price new_price,
+                                  Quantity old_qty, Quantity new_qty,
+                                  OrderFlags old_flags, OrderFlags new_flags,
+                                  const char *action) const {
+    if (old_flags == OrderFlags::NORMAL && new_flags == OrderFlags::NORMAL)
+      return; // Skip normal orders
+
+    std::cout << "\033[36m[FLAGS_" << action << "] " << format_time()
+              << " | " << get_order_flags_str(old_flags)
+              << " → " << get_order_flags_str(new_flags)
+              << " | ID=" << std::setw(7) << std::right << order_id;
+
+    // Price field: show old→new if changed, otherwise single value (12 chars total)
+    if (old_price != new_price) {
+      std::cout << " Price=" << std::setw(5) << std::right << old_price
+                << "→" << std::setw(5) << std::right << new_price;
+    } else {
+      std::cout << " Price=" << std::setw(5) << std::right << old_price << "      ";
+    }
+
+    // Qty field: show old→new if changed, otherwise single value (12 chars total)
+    if (old_qty != new_qty) {
+      std::cout << " Qty=" << std::setw(6) << std::right << old_qty
+                << "→" << std::setw(5) << std::right << new_qty;
+    } else {
+      std::cout << " Qty=" << std::setw(6) << std::right << new_qty << "      ";
+    }
+
+    std::cout << " | TotalOrders=" << std::setw(5) << std::right << total_orders()
+              << "\033[0m\n";
+  }
+#endif
+
+#if DEBUG_ANOMALY_PRINT
   // Format timestamp as HH:MM:SS.mmm
   inline std::string format_timestamp(uint32_t ts) const {
     std::ostringstream oss;
@@ -1277,68 +1381,83 @@ private:
     };
     return to_ms(curr_tick_) - to_ms(order_ts);
   }
+#endif
+
+  // ========================================================================================
+  // DEBUG UTILITIES - ANOMALY DETECTION
+  // ========================================================================================
+#if DEBUG_ANOMALY_PRINT
+
+  // Debug state storage
+  struct DebugState {
+    L2::Order last_order;
+    std::unordered_set<Price> printed_anomalies;
+  };
+  mutable DebugState debug_;
 
   // Check for sign anomaly in level (print far anomalies N+ ticks from TOB during continuous trading)
   void check_anomaly(Level *level) const {
     using namespace TradingSession;
     using namespace AnomalyDetection;
     update_tob();
-    
+
     // Step 1: Distance filter - only check far levels (N+ ticks from TOB)
     const bool is_far_below_bid = (best_bid_ > 0 && level->price < best_bid_ - MIN_DISTANCE_FROM_TOB);
     const bool is_far_above_ask = (best_ask_ > 0 && level->price > best_ask_ + MIN_DISTANCE_FROM_TOB);
-    if (!is_far_below_bid && !is_far_above_ask) return;
-    
+    if (!is_far_below_bid && !is_far_above_ask)
+      return;
+
     // Step 2: Classify by price relative to TOB mid price
     const Price tob_mid = (best_bid_ + best_ask_) / 2;
     const bool is_bid_side = (level->price < tob_mid);
-    
+
     const bool has_anomaly = (is_bid_side && level->net_quantity < 0) || (!is_bid_side && level->net_quantity > 0);
-    
+
     // Skip if no anomaly or already printed
-    if (!has_anomaly) return;
-    if (debug_.printed_anomalies.count(level->price)) return;
-    
-    // Step 3: Time filter - only print during continuous trading (09:30-15:00)
-    const uint8_t hour = (curr_tick_ >> 24) & 0xFF;
-    const uint8_t minute = (curr_tick_ >> 16) & 0xFF;
-    if (!((hour == CONTINUOUS_TRADING_START_HOUR && minute >= CONTINUOUS_TRADING_START_MINUTE) || 
-          (hour >= 10 && hour < CONTINUOUS_TRADING_END_HOUR))) {
+    if (!has_anomaly)
+      return;
+    if (debug_.printed_anomalies.count(level->price))
+      return;
+
+    // Step 3: Time filter - only print during continuous trading (use cached state)
+    if (!in_continuous_trading_) {
       return; // Anomaly exists but not printed (call auction period)
     }
-    
+
     // Print and mark as printed
     debug_.printed_anomalies.insert(level->price);
     print_anomaly_level(level, is_bid_side);
   }
-  
+
   // Print detailed anomaly information for a level
   void print_anomaly_level(Level *level, bool is_bid_side) const {
     // Collect all reverse-sign orders (unmatched orders)
     std::vector<Order *> anomaly_orders;
     anomaly_orders.reserve(level->order_count); // Pre-allocate
-    
+
     for (Order *order : level->orders) {
       const bool is_reverse = (is_bid_side && order->qty < 0) || (!is_bid_side && order->qty > 0);
-      if (is_reverse) anomaly_orders.push_back(order);
+      if (is_reverse)
+        anomaly_orders.push_back(order);
     }
-    if (anomaly_orders.empty()) return;
-    
+    if (anomaly_orders.empty())
+      return;
+
     // Sort by absolute size (largest first)
-    std::sort(anomaly_orders.begin(), anomaly_orders.end(), 
+    std::sort(anomaly_orders.begin(), anomaly_orders.end(),
               [](const Order *a, const Order *b) { return std::abs(a->qty) > std::abs(b->qty); });
-    
+
     // Print level summary header
-    std::cout << "\033[35m[ANOMALY_LEVEL] " << format_time() 
+    std::cout << "\033[35m[ANOMALY_LEVEL] " << format_time()
               << " Level=" << level->price << " ExpectedSide=" << (is_bid_side ? "BID" : "ASK")
               << " NetQty=" << level->net_quantity << " TotalOrders=" << level->order_count
               << " UnmatchedOrders=" << anomaly_orders.size()
               << " | TOB: Bid=" << best_bid_ << " Ask=" << best_ask_ << "\033[0m\n";
-    
+
     // Print all unmatched orders sorted by size
     for (size_t i = 0; i < anomaly_orders.size(); ++i) {
       const Order *order = anomaly_orders[i];
-      std::cout << "\033[35m  [" << (i + 1) << "] ID=" << order->id 
+      std::cout << "\033[35m  [" << (i + 1) << "] ID=" << order->id
                 << " Qty=" << order->qty
                 << " Created=" << format_timestamp(order->timestamp)
                 << " Age=" << calc_age_ms(order->timestamp) << "ms\033[0m\n";
@@ -1348,11 +1467,20 @@ private:
 #endif // DEBUG_ANOMALY_PRINT
 
   // ========================================================================================
-  // DEBUG UTILITIES - DISPLAY BOOK
+  // DEBUG UTILITIES - BOOK DISPLAY
   // ========================================================================================
 
   // Display current market depth
-  void inline print_book() const {
+  void inline print_book([[maybe_unused]] const L2::Order &order) const {
+    // Don't print if there are no visible prices (covers pre-9:30 case naturally)
+    refresh_cache_if_dirty();
+    if (cached_visible_prices_.empty())
+      return;
+
+    // Only print during continuous trading (9:30-15:00) - use cached state
+    if (!in_continuous_trading_)
+      return;
+
 #if DEBUG_BOOK_BY_SECOND == 0
     // Print by tick
     if (new_tick_ && DEBUG_BOOK_PRINT) {
@@ -1364,26 +1492,26 @@ private:
     if (should_print && DEBUG_BOOK_PRINT) {
 #endif
       std::ostringstream book_output;
-      book_output << "[" << format_time() << "] [" << std::setfill('0') << std::setw(3) << total_deferred() << std::setfill(' ') << "] ";
+      book_output << "[" << format_time() << "] [" << std::setfill('0') << std::setw(3) << total_level_zero_orders() << std::setfill(' ') << "] ";
 
       using namespace BookDisplay;
 
       update_tob();
-      
+
 #if DEBUG_ANOMALY_PRINT
       // At continuous trading start (09:30:00), scan all existing levels
       // This ensures anomalies that existed during call auction are detected
       static uint32_t last_check_second = 0;
-      const uint32_t curr_second = (curr_tick_ >> 8);  // Remove milliseconds
+      const uint32_t curr_second = (curr_tick_ >> 8); // Remove milliseconds
       if (curr_second != last_check_second) {
         last_check_second = curr_second;
         const uint8_t hour = (curr_tick_ >> 24) & 0xFF;
         const uint8_t minute = (curr_tick_ >> 16) & 0xFF;
         const uint8_t second = (curr_tick_ >> 8) & 0xFF;
-        
+
         using namespace TradingSession;
-        if (hour == CONTINUOUS_TRADING_START_HOUR && 
-            minute == CONTINUOUS_TRADING_START_MINUTE && 
+        if (hour == CONTINUOUS_TRADING_START_HOUR &&
+            minute == CONTINUOUS_TRADING_START_MINUTE &&
             second == 0) {
           debug_.printed_anomalies.clear();
           refresh_cache_if_dirty();
@@ -1418,7 +1546,7 @@ private:
         const Quantity qty = ask_data[i].second;
         const Quantity display_qty = -qty; // Negate: normal negative -> positive, anomaly positive -> negative
         const bool is_anomaly = (qty > 0); // Ask should be negative, positive is anomaly
-        
+
 #if DEBUG_BOOK_AS_AMOUNT == 0
         // Display as 手 (lots)
         const std::string qty_str = std::to_string(display_qty);
@@ -1428,7 +1556,7 @@ private:
         const std::string qty_str = (display_qty < 0 ? "-" : "") + std::to_string(static_cast<int>(amount + 0.5));
 #endif
         const std::string level_str = std::to_string(price) + "x" + qty_str;
-        
+
         if (is_anomaly) {
           book_output << "\033[31m" << std::setw(LEVEL_WIDTH) << std::left << level_str << "\033[0m";
         } else {
@@ -1451,7 +1579,7 @@ private:
           const Price price = bid_data[i].first;
           const Quantity qty = bid_data[i].second;
           const bool is_anomaly = (qty < 0); // Bid should be positive, negative is anomaly
-          
+
 #if DEBUG_BOOK_AS_AMOUNT == 0
           // Display as 手 (lots)
           const std::string qty_str = std::to_string(qty);
@@ -1461,7 +1589,7 @@ private:
           const std::string qty_str = (qty < 0 ? "-" : "") + std::to_string(static_cast<int>(amount + 0.5));
 #endif
           const std::string level_str = std::to_string(price) + "x" + qty_str;
-          
+
           if (is_anomaly) {
             book_output << "\033[31m" << std::setw(LEVEL_WIDTH) << std::left << level_str << "\033[0m";
           } else {
@@ -1478,21 +1606,22 @@ private:
       const Price tob_mid = (best_bid_ + best_ask_) / 2;
       for (const Price price : cached_visible_prices_) {
         const Level *level = find_level(price);
-        if (!level || !level->has_visible_quantity()) continue;
-        
+        if (!level || !level->has_visible_quantity())
+          continue;
+
         // Classify by price relative to TOB mid price
         const bool is_bid_side = (price < tob_mid);
-        
+
         // Check for sign anomaly: BID should be positive, ASK should be negative
         if ((is_bid_side && level->net_quantity < 0) || (!is_bid_side && level->net_quantity > 0)) {
           ++anomaly_count;
         }
       }
-      
+
       if (anomaly_count > 0) {
         book_output << " \033[31m[" << anomaly_count << " anomalies]\033[0m";
       }
-      
+
       std::cout << book_output.str() << "\n";
 
 #if DEBUG_ANOMALY_PRINT
