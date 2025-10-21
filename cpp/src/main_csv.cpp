@@ -118,10 +118,10 @@ constexpr const char *BIN_EXTENSION = ".bin";
 [[maybe_unused]] constexpr const char *CSV_TICK_ORDER = "逐笔委托.csv"; // Tick-by-tick order CSV filename
 
 // Path settings - modify these for your environment
-constexpr const char *DEFAULT_CONFIG_FILE = "../../../config/config.json";
-constexpr const char *DEFAULT_STOCK_INFO_FILE = "../../../config/daily_holding/stock_info_test.json";
+constexpr const char *DEFAULT_CONFIG_FILE = "../../../../config/config.json";
+constexpr const char *DEFAULT_STOCK_INFO_FILE = "../../../../config/daily_holding/stock_info_test.json";
 constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/mnt/dev/sde/A_stock/L2";
-constexpr const char *DEFAULT_TEMP_DIR = "../../../output/tmp";
+constexpr const char *DEFAULT_TEMP_DIR = "../../../../output/tmp";
 
 // Processing settings - modify for different behaviors
 constexpr bool CLEANUP_AFTER_PROCESSING = false; // Clean up temp files after processing (saves disk space)

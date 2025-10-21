@@ -83,6 +83,9 @@ target_include_directories(app_main_csv PRIVATE
 # Link Zstandard library
 target_link_libraries(app_main_csv PRIVATE ${ZSTD_LIB_PATH})
 
+# Link gperftools for profiling
+target_link_libraries(app_main_csv PRIVATE profiler)
+
 # Installation
 install(TARGETS app_main_csv RUNTIME DESTINATION bin)
 

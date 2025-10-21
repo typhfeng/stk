@@ -13,7 +13,7 @@ class cfg_stk:  # Constants Configs
     wt_session = 'SD0930'
 
     # main functions:
-    profile = False
+    profile = True  # Enable profiling (Python: viztracer, C++: gperftools) -> output/profile/
     plot = False
 
     exchg = ['SSE', 'SZSE', 'BJSE']

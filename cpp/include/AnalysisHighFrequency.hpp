@@ -273,39 +273,6 @@ constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to ch
 // - 内存占用: ~16 bytes/Order (compact design)
 //
 //========================================================================================
-// SCENARIO TABLE (UNIFIED)
-//========================================================================================
-//
-// ┌──────────────┬─────────────┬──────────────────────┬──────────────────────┬─────────────────┐
-// │ Scenario     │ Order Type  │ Initial Placement    │ Trigger Event        │ Final State     │
-// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
-// │ NORMAL       │ MAKER       │ Level[price]         │ TAKER matches        │ Deducted/Erased │
-// │              │ TAKER       │ Find & deduct        │ -                    │ Counterparty ↓  │
-// │              │ CANCEL      │ Find & deduct        │ -                    │ Self order ↓    │
-// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
-// │ OUT_OF_ORDER │ TAKER first │ Level[trade_price]   │ MAKER arrives        │ Deducted/Moved  │
-// │              │             │ flags=OUT_OF_ORDER   │ → Find & deduct      │ → flags=NORMAL  │
-// │              │ CANCEL first│ Level[cancel_price]  │ MAKER arrives        │ Deducted/Moved  │
-// │              │             │ flags=OUT_OF_ORDER   │ → Find & deduct      │ → flags=NORMAL  │
-// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
-// │ CALL_AUCTION │ MAKER       │ Level[report_price]  │ TAKER matches        │ Moved if needed │
-// │ (9:15-9:30)  │             │ flags=CALL_AUCTION   │ → Check price match  │ → flags=NORMAL  │
-// │              │             │                      │ 9:30: Clear flags    │ Stay in Level   │
-// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
-// │ SPECIAL_MAKER│ MAKER (p=0) │ Level[0]             │ TAKER matches        │ Move to Level[p]│
-// │              │             │ flags=SPECIAL_MAKER  │ → Move to trade_px   │ → Deduct/Erase  │
-// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
-// │ ZERO_PRICE   │ CANCEL(p=0) │ Level[0]             │ MAKER arrives        │ Move to Level[p]│
-// │              │             │ flags=ZERO_PRICE     │ → Move to maker_px   │ → Deduct        │
-// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
-// │ ANOMALY_MATCH│ MAKER       │ Level[report_price]  │ TAKER (px mismatch)  │ Move to trade_px│
-// │ (Continuous) │             │ flags=NORMAL         │ !call_auction        │ → ANOMALY_MATCH │
-// ├──────────────┼─────────────┼──────────────────────┼──────────────────────┼─────────────────┤
-// │ UNKNOWN      │ Any (p=0)   │ Level[0]             │ More data arrives    │ Clarify & Move  │
-// │              │             │ flags=UNKNOWN        │ → Update flags       │ or Cleanup      │
-// └──────────────┴─────────────┴──────────────────────┴──────────────────────┴─────────────────┘
-//
-//========================================================================================
 // CONSTANTS AND TYPES
 //========================================================================================
 
@@ -418,6 +385,14 @@ struct Location {
   Location(Level *l, size_t i) : level(l), index(i) {}
 };
 
+// Fast identity hash for OrderId (uint32_t) - avoids std::hash overhead
+struct OrderIdHash {
+  [[gnu::hot, gnu::always_inline]] inline size_t operator()(OrderId id) const noexcept {
+    // Direct identity hash - OrderIds are already well-distributed
+    return static_cast<size_t>(id);
+  }
+};
+
 //========================================================================================
 // MAIN CLASS
 //========================================================================================
@@ -425,51 +400,50 @@ struct Location {
 class AnalysisHighFrequency {
 
 public:
-  // ========================================================================================
-  // CONSTRUCTOR
-  // ========================================================================================
+  //======================================================================================
+  // CONSTRUCTOR & CONFIGURATION
+  //======================================================================================
 
   explicit AnalysisHighFrequency(size_t ORDER_SIZE = L2::DEFAULT_ENCODER_ORDER_SIZE, ExchangeType exchange_type = ExchangeType::SSE)
       : order_lookup_(&order_lookup_memory_pool_), order_memory_pool_(ORDER_SIZE), exchange_type_(exchange_type) {
     // Configure hash table for minimal collisions based on custom order count
     const size_t HASH_BUCKETS = (1ULL << static_cast<size_t>(std::ceil(std::log2(ORDER_SIZE / HASH_LOAD_FACTOR))));
-    order_lookup_.reserve(ORDER_SIZE);
-    order_lookup_.rehash(HASH_BUCKETS);
     order_lookup_.max_load_factor(HASH_LOAD_FACTOR);
+    order_lookup_.rehash(HASH_BUCKETS);
+    order_lookup_.reserve(ORDER_SIZE);
+
+    // Pre-allocate price levels map to reduce rehashing
+    price_levels_.reserve(1024); // Typical max price levels in a trading day
+    price_levels_.max_load_factor(0.5f);
   }
-  
+
   // Set exchange type (useful if not set in constructor)
   void set_exchange_type(ExchangeType exchange_type) {
     exchange_type_ = exchange_type;
   }
 
-  // ========================================================================================
-  // PUBLIC INTERFACE - MAIN ENTRY POINTS
-  // ========================================================================================
+  //======================================================================================
+  // PUBLIC API: Order Processing
+  //======================================================================================
 
-  // Main order processing entry point - with deferred queue for corner cases
+  // Process single order and update LOB state
   [[gnu::hot]] bool process(const L2::Order &order) {
     curr_tick_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
     new_tick_ = curr_tick_ != prev_tick_;
 
-    // Only recompute trading session state when time changes (avoid redundant calculations)
+    // Update session state on tick change
     if (new_tick_) [[unlikely]] {
       update_trading_session_state();
     }
 
-    // Check for call auction/matching period transitions and handle deferred orders
+    // Detect transition from matching period to continuous trading
     static bool was_in_matching_period = false;
-
-    // Entering continuous auction (9:30) - clear CALL_AUCTION flags
     if (was_in_matching_period && !in_matching_period_ && !in_call_auction_) [[unlikely]] {
-      // Exited matching period, entering continuous auction (9:30:00)
-      // Clear CALL_AUCTION flags from remaining orders (they stay at their current levels)
       flush_call_auction_flags();
     }
-
     was_in_matching_period = in_matching_period_;
 
-    print_book(order); // print before updating prev_tick (such that current snapshot is a valid sample)
+    print_book(order);
     prev_tick_ = curr_tick_;
 
     // Process resampling
@@ -481,130 +455,114 @@ public:
     return result;
   };
 
-  // Handle bilateral matching: both bid and ask orders are deducted
-  // Used in: SSE call auction matching period, SZSE all day
+  // Handle bilateral matching (both bid and ask deducted)
   [[gnu::hot]] bool handle_bilateral_matching(const L2::Order &order) {
+    const Price trade_price = order.price;
+    const Quantity volume = order.volume;
+
     // Determine active side: smaller ID = maker (earlier), larger ID = taker (newer)
     const bool is_active_bid = (order.bid_order_id > order.ask_order_id);
-    const OrderId maker_id = is_active_bid ? order.ask_order_id : order.bid_order_id;
-    bool maker_fully_consumed = false;
-    
-    // Process bid order (apply -volume)
+
+    // Perform both lookups back-to-back for better cache locality
     auto bid_it = order_lookup_.find(order.bid_order_id);
-    if (bid_it != order_lookup_.end()) {
-      if (bid_it->second.level->price != order.price) {
-        move_order_between_levels(order.bid_order_id, order.price);
-        bid_it = order_lookup_.find(order.bid_order_id);
-      }
-      if (bid_it != order_lookup_.end()) {
-        bool consumed = apply_volume_change(order.bid_order_id, order.price, -order.volume, bid_it);
-        if (order.bid_order_id == maker_id) maker_fully_consumed = consumed;
-      }
-    }
-    
-    // Process ask order (apply +volume)
     auto ask_it = order_lookup_.find(order.ask_order_id);
-    if (ask_it != order_lookup_.end()) {
-      if (ask_it->second.level->price != order.price) {
-        move_order_between_levels(order.ask_order_id, order.price);
-        ask_it = order_lookup_.find(order.ask_order_id);
+
+    bool maker_fully_consumed = false;
+
+    // Process bid order (apply -volume) - hot path assumes order exists
+    if (bid_it != order_lookup_.end()) [[likely]] {
+      if (bid_it->second.level->price != trade_price) [[unlikely]] {
+        move_order_between_levels_fast(bid_it, trade_price);
       }
-      if (ask_it != order_lookup_.end()) {
-        bool consumed = apply_volume_change(order.ask_order_id, order.price, +order.volume, ask_it);
-        if (order.ask_order_id == maker_id) maker_fully_consumed = consumed;
-      }
+      bool consumed = apply_volume_change(order.bid_order_id, trade_price, -volume, bid_it);
+      maker_fully_consumed = !is_active_bid && consumed;
     }
-    
+
+    // Process ask order (apply +volume) - hot path assumes order exists
+    if (ask_it != order_lookup_.end()) [[likely]] {
+      if (ask_it->second.level->price != trade_price) [[unlikely]] {
+        move_order_between_levels_fast(ask_it, trade_price);
+      }
+      bool consumed = apply_volume_change(order.ask_order_id, trade_price, +volume, ask_it);
+      if (is_active_bid)
+        maker_fully_consumed = consumed;
+    }
+
     // Update TOB: only the maker side (consumed side) needs update
-    effective_price_ = order.price;
-    update_tob_one_side(is_active_bid, maker_fully_consumed, order.price);
+    actual_price_ = trade_price;
+    update_tob_one_side(is_active_bid, maker_fully_consumed, trade_price);
     return true;
   }
 
   [[gnu::hot, gnu::always_inline]] bool update_lob(const L2::Order &order) {
-    // Determine if bilateral matching is needed based on exchange type
-    // SSE: bilateral matching only during call auction matching period
-    // SZSE: bilateral matching all day (when both IDs exist)
-    const bool need_bilateral_matching = (exchange_type_ == ExchangeType::SZSE) || 
-                                          (exchange_type_ == ExchangeType::SSE && in_matching_period_);
-    
-    // Special case: bilateral matching (双边撮合)
-    // Both bid and ask makers are deducted
-    if (order.order_type == L2::OrderType::TAKER && need_bilateral_matching && 
+    // Check for bilateral matching (SSE matching period or SZSE all day)
+    const bool need_bilateral_matching = (exchange_type_ == ExchangeType::SZSE) ||
+                                         (exchange_type_ == ExchangeType::SSE && in_matching_period_);
+
+    if (order.order_type == L2::OrderType::TAKER && need_bilateral_matching &&
         order.bid_order_id != 0 && order.ask_order_id != 0) [[unlikely]] {
       return handle_bilateral_matching(order);
     }
-    
-    // 1. Get signed volume and target ID using simple lookup functions
-    signed_volume_ = get_signed_volume(order);
+
+    // Extract operation parameters
+    delta_qty_ = get_delta_qty(order);
     target_id_ = get_target_id(order);
-    if (signed_volume_ == 0 || target_id_ == 0) [[unlikely]]
+    if (delta_qty_ == 0 || target_id_ == 0) [[unlikely]]
       return false;
 
 #if DEBUG_ANOMALY_PRINT
     debug_.last_order = order;
 #endif
 
-    // 2. Use cached trading session state (computed once in process())
-    // ========================================================================
-    // HOT PATH OPTIMIZATION: Most orders (95%+) follow the fast path below
-    // We minimize branches and hash lookups on this path
-    // ========================================================================
-
-    // 3. Perform lookup for the incoming order (single hash lookup)
+    // Lookup target order (single hash operation)
     auto it = order_lookup_.find(target_id_);
     const bool found = (it != order_lookup_.end());
 
-    // ========================================================================
-    // FAST PATH: TAKER/CANCEL with existing order, normal case
-    // ========================================================================
+    //====================================================================================
+    // FAST PATH: TAKER/CANCEL with existing order
+    //====================================================================================
     if ((order.order_type == L2::OrderType::TAKER || order.order_type == L2::OrderType::CANCEL) &&
-        found && !in_call_auction_) [[likely]] {
-      // HOT PATH: target order exists, no special handling needed
-      effective_price_ = it->second.level->price;
+        found && !in_call_auction_) {
+      actual_price_ = it->second.level->price;
 
-      // Check if order is at correct price level
-      if (effective_price_ == order.price) [[likely]] {
-        // Price matches - simple deduction
-        bool was_fully_consumed = apply_volume_change(target_id_, effective_price_, signed_volume_, it);
-
+      if (actual_price_ == order.price) {
+        bool was_fully_consumed = apply_volume_change(target_id_, actual_price_, delta_qty_, it);
         if (order.order_type == L2::OrderType::TAKER) {
-          update_tob_after_trade(order, was_fully_consumed, effective_price_);
+          update_tob_after_trade(order, was_fully_consumed, actual_price_);
         }
         return true;
       }
-      // Price mismatch - fall through to deferred path for migration
+      // Price mismatch: fall through to slow path
     }
 
-    // ========================================================================
-    // FAST PATH: MAKER without corner cases (most common case)
-    // ========================================================================
-    if (order.order_type == L2::OrderType::MAKER && !in_call_auction_ && order.price != 0 && !found) [[likely]] {
-      // HOT PATH: normal MAKER in continuous auction, not found (new order)
-      effective_price_ = order.price;
-      apply_volume_change(target_id_, effective_price_, signed_volume_, it, OrderFlags::NORMAL);
+    //====================================================================================
+    // FAST PATH: MAKER (most common case)
+    //====================================================================================
+    if (order.order_type == L2::OrderType::MAKER && !in_call_auction_ && order.price != 0 && !found) {
+      actual_price_ = order.price;
+      apply_volume_change(target_id_, actual_price_, delta_qty_, it, OrderFlags::NORMAL);
       return true;
     }
 
-    // ========================================================================
-    // SLOW PATH: Corner cases requiring special handling
-    // ========================================================================
+    //====================================================================================
+    // SLOW PATH: Corner cases
+    //====================================================================================
     return update_lob_deferred(order, it, found, in_call_auction_, in_matching_period_);
   };
 
-  // Deferred path for corner cases (out-of-order, call auction, zero-price, anomaly match)
+  // Slow path: handle corner cases (out-of-order, call auction, special prices)
   [[gnu::cold, gnu::noinline]] bool update_lob_deferred(
       const L2::Order &order,
-      std::pmr::unordered_map<OrderId, Location>::iterator it,
+      std::pmr::unordered_map<OrderId, Location, OrderIdHash>::iterator it,
       bool found,
       bool in_call_auction,
       bool in_matching_period) {
 
-    // ========================================================================
-    // MAKER ORDER - Deferred Path
-    // ========================================================================
+    //====================================================================================
+    // MAKER ORDER
+    //====================================================================================
     if (order.order_type == L2::OrderType::MAKER) {
-      // Determine initial placement and flags
+      // Determine placement and flags
       Price placement_price;
       OrderFlags flags;
 
@@ -623,129 +581,96 @@ public:
       }
 
       if (found) {
-        // OUT_OF_ORDER: TAKER/CANCEL arrived first
-        // Order already exists (created by earlier TAKER/CANCEL)
+        // OUT_OF_ORDER: order exists (created by earlier TAKER/CANCEL)
         Price existing_price = it->second.level->price;
-
-        // Check if we need to migrate the order
         if (existing_price != placement_price) {
-          // Migrate order to correct level
-          move_order_between_levels(target_id_, placement_price);
-          // Re-fetch iterator after migration
-          it = order_lookup_.find(target_id_);
+          move_order_between_levels_fast(it, placement_price);
         }
-
-        // Deduct the volume (MAKER adds, earlier TAKER/CANCEL already set opposite volume)
-        apply_volume_change(target_id_, placement_price, signed_volume_, it, flags);
+        apply_volume_change(target_id_, placement_price, delta_qty_, it, flags);
       } else {
-        // Normal case: create new order
-        apply_volume_change(target_id_, placement_price, signed_volume_, it, flags);
+        // Create new order
+        apply_volume_change(target_id_, placement_price, delta_qty_, it, flags);
       }
 
       return true;
     }
 
-    // ========================================================================
-    // TAKER ORDER - Deferred Path
-    // ========================================================================
+    //====================================================================================
+    // TAKER ORDER
+    //====================================================================================
     if (order.order_type == L2::OrderType::TAKER) {
       const bool is_bid = (order.order_dir == L2::OrderDirection::BID);
       const OrderId self_id = is_bid ? order.bid_order_id : order.ask_order_id;
       const bool both_ids_present = (order.bid_order_id != 0 && order.ask_order_id != 0);
 
-      // Step 1: Handle target order (primary match)
+      // Handle target order (counterparty)
       if (found) {
-        // Target order found - check price match
         Price target_price = it->second.level->price;
 
         if (target_price != order.price) {
-          // Price mismatch - need to migrate
           OrderFlags anomaly_flag = OrderFlags::NORMAL;
-
-          // Determine if this is an anomaly
           if (!in_call_auction && !in_matching_period) {
-            // Continuous trading with price mismatch - ANOMALY_MATCH
             anomaly_flag = OrderFlags::ANOMALY_MATCH;
           }
 
-          // Migrate order to correct price level
-          move_order_between_levels(target_id_, order.price);
-          // Re-fetch iterator after migration
-          it = order_lookup_.find(target_id_);
+          move_order_between_levels_fast(it, order.price);
 
-          // Update flags if anomaly (re-fetch order pointer after migration)
-          if (anomaly_flag == OrderFlags::ANOMALY_MATCH && it != order_lookup_.end()) {
+          if (anomaly_flag == OrderFlags::ANOMALY_MATCH) {
             Order *target_order = it->second.level->orders[it->second.index];
             target_order->flags = anomaly_flag;
           }
         }
 
-        // Deduct volume
-        effective_price_ = order.price;
-        bool was_fully_consumed = apply_volume_change(target_id_, effective_price_, signed_volume_, it);
-        update_tob_after_trade(order, was_fully_consumed, effective_price_);
+        actual_price_ = order.price;
+        bool was_fully_consumed = apply_volume_change(target_id_, actual_price_, delta_qty_, it);
+        update_tob_after_trade(order, was_fully_consumed, actual_price_);
       } else {
-        // Target order not found - OUT_OF_ORDER case
-        // Create placeholder order at trade price
-        effective_price_ = order.price;
-        apply_volume_change(target_id_, effective_price_, signed_volume_, it, OrderFlags::OUT_OF_ORDER);
+        // OUT_OF_ORDER: create placeholder
+        actual_price_ = order.price;
+        apply_volume_change(target_id_, actual_price_, delta_qty_, it, OrderFlags::OUT_OF_ORDER);
       }
 
-      // Step 2: Handle self order (market orders only)
-      // Call auction bilateral matching is already handled above
-      // This only handles market orders with single ID from Level[0]
+      // Handle self order (market orders from Level[0])
       const bool need_self_order = (self_id != 0 && self_id != target_id_) && !both_ids_present;
-      
-      if (need_self_order) [[unlikely]] {
+
+      if (need_self_order) {
         auto self_it = order_lookup_.find(self_id);
         if (self_it != order_lookup_.end()) {
-          // Self order exists - check if special order needs migration
           Order *self_order = self_it->second.level->orders[self_it->second.index];
 
           if (self_order->flags == OrderFlags::SPECIAL_MAKER) {
-            // Market order - migrate to trade price if needed
             Price self_price = self_it->second.level->price;
             if (self_price != order.price) {
-              move_order_between_levels(self_id, order.price);
-              self_it = order_lookup_.find(self_id);
+              move_order_between_levels_fast(self_it, order.price);
             }
           }
 
-          // Deduct self order volume
-          if (self_it != order_lookup_.end()) {
-            apply_volume_change(self_id, order.price, -signed_volume_, self_it);
-          }
+          apply_volume_change(self_id, order.price, -delta_qty_, self_it);
         }
       }
 
       return true;
     }
 
-    // ========================================================================
-    // CANCEL ORDER - Deferred Path
-    // ========================================================================
+    //====================================================================================
+    // CANCEL ORDER
+    //====================================================================================
     if (order.order_type == L2::OrderType::CANCEL) {
       if (found) {
-        // Self order found - normal cancellation
         Price self_price = it->second.level->price;
 
-        // Check if order is in Level[0] and CANCEL has price
+        // Migrate from Level[0] if CANCEL has price
         if (self_price == 0 && order.price != 0) {
-          // Migrate from Level[0] to actual price
-          move_order_between_levels(target_id_, order.price);
-          it = order_lookup_.find(target_id_);
+          move_order_between_levels_fast(it, order.price);
           self_price = order.price;
         }
 
-        // Deduct volume
-        apply_volume_change(target_id_, self_price, signed_volume_, it);
+        apply_volume_change(target_id_, self_price, delta_qty_, it);
       } else {
-        // Self order not found - OUT_OF_ORDER or ZERO_PRICE case
+        // OUT_OF_ORDER or ZERO_PRICE: create placeholder
         Price placement_price = (order.price == 0) ? 0 : order.price;
         OrderFlags flags = (order.price == 0) ? OrderFlags::ZERO_PRICE : OrderFlags::OUT_OF_ORDER;
-
-        // Create placeholder order
-        apply_volume_change(target_id_, placement_price, signed_volume_, it, flags);
+        apply_volume_change(target_id_, placement_price, delta_qty_, it, flags);
       }
 
       return true;
@@ -754,54 +679,52 @@ public:
     return false;
   };
 
-  // ========================================================================================
-  // PUBLIC INTERFACE - DATA ACCESS
-  // ========================================================================================
+  //======================================================================================
+  // PUBLIC API: Market Data Access
+  //======================================================================================
 
-  // Get best bid price
+  // Get best bid (highest buy price)
   [[gnu::hot]] Price best_bid() const {
     update_tob();
     return best_bid_;
   }
 
-  // Get best ask price
+  // Get best ask (lowest sell price)
   [[gnu::hot]] Price best_ask() const {
     update_tob();
     return best_ask_;
   }
 
-  // Book statistics - optimized for performance
+  // Statistics
   size_t total_orders() const { return order_lookup_.size(); }
   size_t total_levels() const { return price_levels_.size(); }
   size_t total_level_zero_orders() const {
     Level *level0 = find_level(0);
     return level0 ? level0->order_count : 0;
-  } // Number of orders in Level[0] (special cases)
-
-  // ========================================================================================
-  // PUBLIC INTERFACE - BATCH PROCESSING
-  // ========================================================================================
-
-  // Simple batch processing
-  template <typename OrderRange>
-  [[gnu::hot]] size_t process_batch(const OrderRange &order_range) {
-    size_t successfully_processed = 0;
-
-    for (const auto &current_order : order_range) {
-      if (process(current_order))
-        ++successfully_processed;
-    }
-
-    return successfully_processed;
   }
 
-  // ========================================================================================
-  // PUBLIC INTERFACE - MARKET DEPTH ITERATION
-  // ========================================================================================
+  //======================================================================================
+  // PUBLIC API: Batch Processing
+  //======================================================================================
 
-  // Iterate through bid levels (price >= best_bid_) - optimized with cache
+  // Process multiple orders in batch
+  template <typename OrderRange>
+  [[gnu::hot]] size_t process_batch(const OrderRange &order_range) {
+    size_t count = 0;
+    for (const auto &order : order_range) {
+      if (process(order))
+        ++count;
+    }
+    return count;
+  }
+
+  //======================================================================================
+  // PUBLIC API: Market Depth Iteration
+  //======================================================================================
+
+  // Iterate through visible bid levels (descending price order)
   template <typename Func>
-  void for_each_visible_bid(Func &&callback_function, size_t max_levels = 5) const {
+  void for_each_visible_bid(Func &&callback, size_t max_levels = 5) const {
     update_tob();
     refresh_cache_if_dirty();
 
@@ -818,15 +741,15 @@ public:
       Price price = *it;
       Level *level = find_level(price);
       if (level && level->has_visible_quantity()) {
-        callback_function(price, level->net_quantity);
+        callback(price, level->net_quantity);
         ++levels_processed;
       }
     }
   }
 
-  // Iterate through ask levels (price <= best_ask_) - optimized with cache
+  // Iterate through visible ask levels (ascending price order)
   template <typename Func>
-  void for_each_visible_ask(Func &&callback_function, size_t max_levels = 5) const {
+  void for_each_visible_ask(Func &&callback, size_t max_levels = 5) const {
     update_tob();
     refresh_cache_if_dirty();
 
@@ -842,15 +765,15 @@ public:
       Price price = *it;
       Level *level = find_level(price);
       if (level && level->has_visible_quantity()) {
-        callback_function(price, level->net_quantity);
+        callback(price, level->net_quantity);
         ++levels_processed;
       }
     }
   }
 
-  // ========================================================================================
-  // PUBLIC INTERFACE - UTILITIES
-  // ========================================================================================
+  //======================================================================================
+  // PUBLIC API: Utilities
+  //======================================================================================
 
   // Complete reset
   void clear() {
@@ -870,9 +793,9 @@ public:
     in_call_auction_ = false;
     in_matching_period_ = false;
     in_continuous_trading_ = false;
-    signed_volume_ = 0;
+    delta_qty_ = 0;
     target_id_ = 0;
-    effective_price_ = 0;
+    actual_price_ = 0;
 #if DEBUG_ANOMALY_PRINT
     debug_.printed_anomalies.clear();
 #endif
@@ -883,9 +806,9 @@ public:
   }
 
 private:
-  // ========================================================================================
-  // CORE DATA STRUCTURES
-  // ========================================================================================
+  //======================================================================================
+  // DATA STRUCTURES
+  //======================================================================================
 
   // Price level storage (stable memory addresses via deque)
   std::deque<Level> level_storage_;                 // All price levels (deque guarantees stable pointers)
@@ -902,9 +825,9 @@ private:
   mutable bool tob_dirty_ = true; // TOB needs recalculation flag
 
   // Order tracking infrastructure
-  std::pmr::unsynchronized_pool_resource order_lookup_memory_pool_; // PMR memory pool for hash map
-  std::pmr::unordered_map<OrderId, Location> order_lookup_;         // OrderId -> Location(Level*, index) for O(1) order lookup
-  MemPool::MemoryPool<Order> order_memory_pool_;                    // Memory pool for Order object allocation
+  std::pmr::unsynchronized_pool_resource order_lookup_memory_pool_;      // PMR memory pool for hash map (uses default configuration)
+  std::pmr::unordered_map<OrderId, Location, OrderIdHash> order_lookup_; // OrderId -> Location(Level*, index) for O(1) order lookup with identity hash
+  MemPool::MemoryPool<Order> order_memory_pool_;                         // Memory pool for Order object allocation
 
   // Market timestamp tracking (hour|minute|second|millisecond)
   uint32_t prev_tick_ = 0; // Previous tick timestamp
@@ -920,44 +843,44 @@ private:
   ExchangeType exchange_type_ = ExchangeType::SSE;
 
   // Hot path temporary variable cache to reduce allocation overhead
-  mutable Quantity signed_volume_;
-  mutable OrderId target_id_;
-  mutable Price effective_price_;
+  mutable Quantity delta_qty_; // Signed quantity change (+add/-deduct)
+  mutable OrderId target_id_;  // Target order ID for current operation
+  mutable Price actual_price_; // Actual effective price for current operation
 
   // Resampling components
   ResampleRunBar resampler_;
 
-  // ========================================================================================
-  // CORE LOB MANAGEMENT - LEVEL OPERATIONS
-  // ========================================================================================
+  //======================================================================================
+  // LEVEL MANAGEMENT
+  //======================================================================================
 
-  // Simple price level lookup
+  // Find level by price (O(1) hash lookup)
   [[gnu::hot, gnu::always_inline]] inline Level *find_level(Price price) const {
-    auto level_iterator = price_levels_.find(price);
-    return (level_iterator != price_levels_.end()) ? level_iterator->second : nullptr;
+    auto it = price_levels_.find(price);
+    return (it != price_levels_.end()) ? it->second : nullptr;
   }
 
-  // Create new price level
+  // Create new level at price
   [[gnu::hot, gnu::always_inline]] Level *create_level(Price price) {
     level_storage_.emplace_back(price);
-    Level *new_level = &level_storage_.back();
-    price_levels_[price] = new_level;
-    return new_level;
+    Level *level = &level_storage_.back();
+    price_levels_[price] = level;
+    return level;
   }
 
   // Remove empty level
-  [[gnu::hot, gnu::always_inline]] void remove_level(Level *level_to_remove, bool erase_visible = true) {
-    price_levels_.erase(level_to_remove->price);
+  [[gnu::hot, gnu::always_inline]] void remove_level(Level *level, bool erase_visible = true) {
+    price_levels_.erase(level->price);
     if (erase_visible) {
-      remove_visible_price(level_to_remove->price);
+      remove_visible_price(level->price);
     }
   }
 
-  // ========================================================================================
-  // CORE LOB MANAGEMENT - VISIBLE PRICE TRACKING
-  // ========================================================================================
+  //======================================================================================
+  // VISIBLE PRICE TRACKING
+  //======================================================================================
 
-  // High-performance visible price cache management
+  // Rebuild sorted price cache from bitmap (called lazily when dirty)
   [[gnu::hot, gnu::always_inline]] inline void refresh_cache_if_dirty() const {
     if (!cache_dirty_)
       return;
@@ -972,7 +895,7 @@ private:
     cache_dirty_ = false;
   }
 
-  // O(1) visible price addition
+  // Mark price as visible (O(1))
   [[gnu::hot, gnu::always_inline]] inline void add_visible_price(Price price) {
     if (!visible_price_bitmap_[price]) {
       visible_price_bitmap_.set(price);
@@ -980,7 +903,7 @@ private:
     }
   }
 
-  // O(1) visible price removal
+  // Mark price as invisible (O(1))
   [[gnu::hot, gnu::always_inline]] inline void remove_visible_price(Price price) {
     if (visible_price_bitmap_[price]) {
       visible_price_bitmap_.reset(price);
@@ -988,7 +911,7 @@ private:
     }
   }
 
-  // Maintain visible price ordering after any level total change - now O(1)!
+  // Update visibility after level quantity change
   [[gnu::hot, gnu::always_inline]] inline void update_visible_price(Level *level) {
     if (level->has_visible_quantity()) {
       add_visible_price(level->price);
@@ -997,7 +920,7 @@ private:
     }
   }
 
-  // Find next ask level strictly above a given price with visible quantity - O(n) worst case, but typically very fast
+  // Find next visible ask price above given price (ascending scan)
   Price next_ask_above(Price from_price) const {
     for (uint32_t price_u32 = static_cast<uint32_t>(from_price) + 1; price_u32 < PRICE_RANGE_SIZE; ++price_u32) {
       Price price = static_cast<Price>(price_u32);
@@ -1008,7 +931,7 @@ private:
     return 0;
   }
 
-  // Find next bid level strictly below a given price with visible quantity - O(n) worst case, but typically very fast
+  // Find next visible bid price below given price (descending scan)
   Price next_bid_below(Price from_price) const {
     if (from_price == 0)
       return 0;
@@ -1020,24 +943,24 @@ private:
     return 0;
   }
 
-  // Find minimum price with visible quantity - O(n) worst case, but cache-friendly
+  // Get minimum visible price (from sorted cache)
   Price min_visible_price() const {
     refresh_cache_if_dirty();
     return cached_visible_prices_.empty() ? 0 : cached_visible_prices_.front();
   }
 
-  // Find maximum price with visible quantity - O(n) worst case, but cache-friendly
+  // Get maximum visible price (from sorted cache)
   Price max_visible_price() const {
     refresh_cache_if_dirty();
     return cached_visible_prices_.empty() ? 0 : cached_visible_prices_.back();
   }
 
-  // ========================================================================================
-  // CORE LOB MANAGEMENT - ORDER PROCESSING
-  // ========================================================================================
+  //======================================================================================
+  // ORDER OPERATIONS
+  //======================================================================================
 
-  // Simplified unified volume calculation
-  [[gnu::hot, gnu::always_inline]] inline Quantity get_signed_volume(const L2::Order &order) const {
+  // Calculate signed quantity delta: +add to level, -deduct from level
+  [[gnu::hot, gnu::always_inline]] inline Quantity get_delta_qty(const L2::Order &order) const {
     const bool is_bid = (order.order_dir == L2::OrderDirection::BID);
 
     switch (order.order_type) {
@@ -1061,7 +984,7 @@ private:
     }
   }
 
-  // Simplified unified target ID lookup
+  // Extract target order ID from order (the order to be modified)
   [[gnu::hot, gnu::always_inline]] inline OrderId get_target_id(const L2::Order &order) const {
     const bool is_bid = (order.order_dir == L2::OrderDirection::BID);
 
@@ -1081,23 +1004,23 @@ private:
     }
   }
 
-  // Unified order processing core logic - now accepts lookup iterator from caller and flags
+  // Apply quantity change to order: create new order or modify existing order
   [[gnu::hot, gnu::always_inline]] bool apply_volume_change(
       OrderId target_id,
       Price price,
-      Quantity signed_volume,
-      decltype(order_lookup_.find(target_id)) order_lookup_iterator,
+      Quantity delta_qty,
+      decltype(order_lookup_.find(target_id)) it,
       OrderFlags flags = OrderFlags::NORMAL) {
 
-    if (order_lookup_iterator != order_lookup_.end()) {
+    if (it != order_lookup_.end()) {
       // Order exists - modify it
-      Level *target_level = order_lookup_iterator->second.level;
-      size_t order_index = order_lookup_iterator->second.index;
+      Level *target_level = it->second.level;
+      size_t order_index = it->second.index;
       Order *target_order = target_level->orders[order_index];
 
       // Apply signed volume change
       const Quantity old_qty = target_order->qty;
-      const Quantity new_qty = old_qty + signed_volume;
+      const Quantity new_qty = old_qty + delta_qty;
 
       if (new_qty == 0) {
         // Order fully consumed - print debug info before removal
@@ -1109,7 +1032,7 @@ private:
 
         // Order fully consumed - remove completely
         target_level->remove(order_index);
-        order_lookup_.erase(order_lookup_iterator);
+        order_lookup_.erase(it);
 
         // Update lookup index for any moved order (swap-and-pop side effect)
         if (order_index < target_level->orders.size()) {
@@ -1129,7 +1052,7 @@ private:
         return true; // Fully consumed
       } else {
         // Partial update
-        target_level->net_quantity += signed_volume;
+        target_level->net_quantity += delta_qty;
         target_order->qty = new_qty;
 
         // Update flags if provided
@@ -1149,9 +1072,9 @@ private:
     } else {
       // Order doesn't exist - create new order with flags
 #if DEBUG_ANOMALY_PRINT
-      Order *new_order = order_memory_pool_.construct(signed_volume, target_id, curr_tick_, flags);
+      Order *new_order = order_memory_pool_.construct(delta_qty, target_id, curr_tick_, flags);
 #else
-      Order *new_order = order_memory_pool_.construct(signed_volume, target_id, flags);
+      Order *new_order = order_memory_pool_.construct(delta_qty, target_id, flags);
 #endif
       if (!new_order)
         return false;
@@ -1167,18 +1090,81 @@ private:
       update_visible_price(target_level);
 
 #if DEBUG_ORDER_FLAGS_CREATE
-      print_order_flags_create(target_id, price, signed_volume, flags);
+      print_order_flags_create(target_id, price, delta_qty, flags);
 #endif
 
       return false; // New order created
     }
   }
 
-  // ========================================================================================
-  // CORE LOB MANAGEMENT - TOP OF BOOK (TOB)
-  // ========================================================================================
+  //======================================================================================
+  // ORDER MIGRATION
+  //======================================================================================
 
-  // Simple TOB update when needed (bootstrap only)
+  // Fast version: move order using existing iterator (avoids hash lookup)
+  [[gnu::hot, gnu::always_inline]] inline void move_order_between_levels_fast(
+      std::pmr::unordered_map<OrderId, Location, OrderIdHash>::iterator it, Price new_price) {
+    Level *old_level = it->second.level;
+    size_t old_index = it->second.index;
+    Price old_price = old_level->price;
+
+    if (old_price == new_price)
+      return; // Already at correct level
+
+    Order *order = old_level->orders[old_index];
+
+    // Remove from old level (swap-and-pop)
+    old_level->remove(old_index);
+
+    // Update index for swapped order (if any)
+    if (old_index < old_level->orders.size()) {
+      auto moved_order_it = order_lookup_.find(old_level->orders[old_index]->id);
+      if (moved_order_it != order_lookup_.end()) {
+        moved_order_it->second.index = old_index;
+      }
+    }
+
+    // Add to new level
+    Level *new_level = find_level(new_price);
+    if (!new_level) {
+      new_level = create_level(new_price);
+    }
+
+    size_t new_index = new_level->orders.size();
+    new_level->add(order);
+
+    // Update order_lookup_
+    it->second.level = new_level;
+    it->second.index = new_index;
+
+    // Maintain visible price bitmap
+    update_visible_price(old_level);
+    update_visible_price(new_level);
+
+    // Cleanup empty level
+    if (old_level->empty()) {
+      remove_level(old_level);
+    }
+
+#if DEBUG_ORDER_FLAGS_RESOLVE
+    print_order_flags_resolve(order->id, old_price, new_price, order->qty, order->qty, order->flags, order->flags, "MIGRATE   ");
+#endif
+  }
+
+  // Move order from one level to another (slower: requires ID lookup)
+  void move_order_between_levels(OrderId order_id, Price new_price) {
+    auto it = order_lookup_.find(order_id);
+    if (it == order_lookup_.end())
+      return; // Order not found
+
+    move_order_between_levels_fast(it, new_price);
+  }
+
+  //======================================================================================
+  // TOP OF BOOK (TOB)
+  //======================================================================================
+
+  // Bootstrap TOB from visible prices (lazy initialization)
   void update_tob() const {
     if (!tob_dirty_)
       return;
@@ -1191,19 +1177,17 @@ private:
     tob_dirty_ = false;
   }
 
-  // Core TOB update logic: update one side when maker is consumed
-  // is_active_bid: true if active buyer consumed ask maker, false if active seller consumed bid maker
-  // was_fully_consumed: true if maker level is emptied, false if partially filled
+  // Update one side of TOB after trade
   [[gnu::hot, gnu::always_inline]] inline void update_tob_one_side(bool is_active_bid, bool was_fully_consumed, Price trade_price) {
     if (was_fully_consumed) {
-      // Maker level emptied - advance to next level
+      // Level emptied - advance to next level
       if (is_active_bid) {
         best_ask_ = next_ask_above(trade_price);
       } else {
         best_bid_ = next_bid_below(trade_price);
       }
     } else {
-      // Maker level partially filled - TOB stays at trade price
+      // Level partially filled - TOB stays at trade price
       if (is_active_bid) {
         best_ask_ = trade_price;
       } else {
@@ -1213,42 +1197,38 @@ private:
     tob_dirty_ = false;
   }
 
-  // TOB update for single-side matching (SSE continuous trading)
+  // Update TOB after single-side trade (SSE continuous trading)
   [[gnu::hot, gnu::always_inline]] inline void update_tob_after_trade(const L2::Order &order, bool was_fully_consumed, Price trade_price) {
     const bool is_active_bid = (order.order_dir == L2::OrderDirection::BID);
     update_tob_one_side(is_active_bid, was_fully_consumed, trade_price);
   }
 
-  // ========================================================================================
-  // TRADING SESSION STATE MANAGEMENT
-  // ========================================================================================
+  //======================================================================================
+  // TRADING SESSION STATE
+  //======================================================================================
 
-  // Update all trading session state flags in one pass (called only when time changes)
-  // Optimized: use single time value comparison instead of multiple branches
+  // Update session state flags based on current time (called when tick changes)
   [[gnu::hot]] inline void update_trading_session_state() {
-    // Combine hour and minute into single value for fast range check
     const uint16_t hhmm = ((curr_tick_ >> 16) & 0xFFFF); // hour * 256 + minute
-    
-    // Time constants (hour * 256 + minute)
-    constexpr uint16_t T_0915 = (9 << 8) | 15;   // 9:15
-    constexpr uint16_t T_0925 = (9 << 8) | 25;   // 9:25
-    constexpr uint16_t T_0930 = (9 << 8) | 30;   // 9:30
-    constexpr uint16_t T_1457 = (14 << 8) | 57;  // 14:57
-    constexpr uint16_t T_1500 = (15 << 8) | 0;   // 15:00
-    
-    // Check matching period first (9:25-9:30, 14:57-15:00)
+
+    // Time boundaries
+    constexpr uint16_t T_0915 = (9 << 8) | 15;  // 9:15
+    constexpr uint16_t T_0925 = (9 << 8) | 25;  // 9:25
+    constexpr uint16_t T_0930 = (9 << 8) | 30;  // 9:30
+    constexpr uint16_t T_1457 = (14 << 8) | 57; // 14:57
+    constexpr uint16_t T_1500 = (15 << 8) | 0;  // 15:00
+
+    // Matching period: 9:25-9:30, 14:57-15:00
     in_matching_period_ = (hhmm >= T_0925 && hhmm < T_0930) || (hhmm >= T_1457 && hhmm <= T_1500);
-    
-    // Check call auction period (9:15-9:30, 14:57-15:00)
-    // Note: in_matching_period_ is subset of in_call_auction_
+
+    // Call auction: 9:15-9:30, 14:57-15:00 (includes matching period)
     in_call_auction_ = (hhmm >= T_0915 && hhmm < T_0930) || (hhmm >= T_1457 && hhmm <= T_1500);
-    
-    // Continuous trading: not in call auction
+
+    // Continuous trading: outside call auction
     in_continuous_trading_ = !in_call_auction_;
   }
 
-  // Flush call auction flags at 9:30:00 - clear CALL_AUCTION flags from all orders
-  // Remaining call auction orders stay in their current levels (at reported price)
+  // Clear CALL_AUCTION flags at 9:30:00 (orders stay at current levels)
   void flush_call_auction_flags() {
     for (auto &[price, level] : price_levels_) {
       for (Order *order : level->orders) {
@@ -1263,69 +1243,9 @@ private:
     // TOB will be updated by first continuous trading order
   }
 
-  // ========================================================================================
-  // ORDER MIGRATION
-  // ========================================================================================
-
-  // Move order from one level to another (核心新增功能)
-  // This is the key innovation for handling price mismatches
-  void move_order_between_levels(OrderId order_id, Price new_price) {
-    // 1. Find current location via order_lookup_
-    auto it = order_lookup_.find(order_id);
-    if (it == order_lookup_.end())
-      return; // Order not found
-
-    Level *old_level = it->second.level;
-    size_t old_index = it->second.index;
-    Price old_price = old_level->price;
-
-    if (old_price == new_price)
-      return; // Already at correct level
-
-    Order *order = old_level->orders[old_index];
-
-    // 2. Remove from old level (swap-and-pop)
-    old_level->remove(old_index);
-
-    // 3. Update index for swapped order (if any)
-    if (old_index < old_level->orders.size()) {
-      auto moved_order_it = order_lookup_.find(old_level->orders[old_index]->id);
-      if (moved_order_it != order_lookup_.end()) {
-        moved_order_it->second.index = old_index;
-      }
-    }
-
-    // 4. Add to new level
-    Level *new_level = find_level(new_price);
-    if (!new_level) {
-      new_level = create_level(new_price);
-    }
-
-    size_t new_index = new_level->orders.size();
-    new_level->add(order);
-
-    // 5. Update order_lookup_
-    it->second.level = new_level;
-    it->second.index = new_index;
-
-    // 6. Maintain visible price bitmap
-    update_visible_price(old_level);
-    update_visible_price(new_level);
-
-    // 7. Cleanup empty level
-    if (old_level->empty()) {
-      remove_level(old_level);
-    }
-
-    // 8. Print debug info for order migration
-#if DEBUG_ORDER_FLAGS_RESOLVE
-    print_order_flags_resolve(order_id, old_price, new_price, order->qty, order->qty, order->flags, order->flags, "MIGRATE   ");
-#endif
-  }
-
-  // ========================================================================================
+  //======================================================================================
   // TIME UTILITIES
-  // ========================================================================================
+  //======================================================================================
 
   // Convert packed timestamp to human-readable format
   std::string format_time() const {
@@ -1343,9 +1263,9 @@ private:
     return time_formatter.str();
   }
 
-  // ========================================================================================
-  // ORDER FLAGS DEBUG UTILITIES
-  // ========================================================================================
+  //======================================================================================
+  // DEBUG: Order Flags
+  //======================================================================================
 
   // Helper: Get flags string
   static const char *get_order_flags_str(OrderFlags flags) {
@@ -1389,9 +1309,9 @@ private:
   // 🔵 RESOLVE: Print when order with special flags is resolved (Blue)
   // Types: MIGRATE (price change), CONSUME (fully matched), UPDATE_FLAGS (flags changed)
   void print_order_flags_resolve(OrderId order_id, Price old_price, Price new_price,
-                                  Quantity old_qty, Quantity new_qty,
-                                  OrderFlags old_flags, OrderFlags new_flags,
-                                  const char *action) const {
+                                 Quantity old_qty, Quantity new_qty,
+                                 OrderFlags old_flags, OrderFlags new_flags,
+                                 const char *action) const {
     if (old_flags == OrderFlags::NORMAL && new_flags == OrderFlags::NORMAL)
       return; // Skip normal orders
 
@@ -1443,9 +1363,9 @@ private:
   }
 #endif
 
-  // ========================================================================================
-  // DEBUG UTILITIES - ANOMALY DETECTION
-  // ========================================================================================
+  //======================================================================================
+  // DEBUG: Anomaly Detection
+  //======================================================================================
 #if DEBUG_ANOMALY_PRINT
 
   // Debug state storage
@@ -1526,9 +1446,9 @@ private:
 
 #endif // DEBUG_ANOMALY_PRINT
 
-  // ========================================================================================
-  // DEBUG UTILITIES - BOOK DISPLAY
-  // ========================================================================================
+  //======================================================================================
+  // DEBUG: Book Display
+  //======================================================================================
 
   // Display current market depth
   void inline print_book([[maybe_unused]] const L2::Order &order) const {
@@ -1557,7 +1477,7 @@ private:
       using namespace BookDisplay;
 
       update_tob();
-      
+
       // Skip printing if TOB is invalid (e.g. after flush_call_auction_flags)
       if (best_bid_ > best_ask_)
         return;
