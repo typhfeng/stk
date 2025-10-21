@@ -542,7 +542,9 @@ void ProcessAsset(const std::string &asset_code, const JsonConfig::StockInfo &st
   L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
 
   // Create a persistent LOB for this asset and reset after each day
-  AnalysisHighFrequency HFA_(L2::DEFAULT_ENCODER_ORDER_SIZE);
+  // Infer exchange type from asset code (SSE vs SZSE determines matching mechanism)
+  L2::ExchangeType exchange_type = L2::infer_exchange_type(asset_code);
+  AnalysisHighFrequency HFA_(L2::DEFAULT_ENCODER_ORDER_SIZE, exchange_type);
 
   // Generate date range for this asset
   const std::string start_formatted = JsonConfig::FormatYearMonth(stock_info.start_date);

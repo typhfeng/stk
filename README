@@ -10,6 +10,7 @@ lsblk -o NAME,MODEL,SIZE,ROTA,TRAN,FSTYPE,MOUNTPOINT
 
 # cmd
 net localgroup Administrators Chuyin.Wang /add
+runas /user:amlogic\chuyin.wang "powershell.exe -NoExit -Command cd '%USERPROFILE%'"
 # powershell
 $disk_id = 1
 wsl --mount "\\.\PHYSICALDRIVE$disk_id" --bare

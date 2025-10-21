@@ -23,9 +23,6 @@ namespace L2 {
 // Processing configuration constants
 inline constexpr uint32_t DECOMPRESSION_THREADS = 8;
 inline constexpr uint32_t MAX_TEMP_FOLDERS = 16; // disk backpressure limit
-// inline const char *INPUT_DIR = "/media/chuyin/48ac8067-d3b7-4332-b652-45e367a1ebcc/A_stock/L2";
-// inline const char *OUTPUT_DIR = "/home/chuyin/work/L2_binary";
-// inline const char *TEMP_DIR = "../../../output/tmp";
 inline const char *INPUT_DIR = "/mnt/dev/sde/A_stock/L2";
 inline const char *OUTPUT_DIR = "../../../output/tmp/L2_binary";
 inline const char *TEMP_DIR = "../../../output/tmp";
@@ -149,6 +146,123 @@ constexpr uint8_t BID = 0;
 constexpr uint8_t ASK = 1;
 } // namespace OrderDirection
 
+//========================================================================================
+// MARKET CLASSIFICATION AND EXCHANGE TYPES
+//========================================================================================
+
+// Exchange type enumeration - determines matching mechanism for order book reconstruction
+enum class ExchangeType : uint8_t {
+  SSE,  // Shanghai Stock Exchange (上交所) - bilateral in call auction, unilateral in continuous
+  SZSE, // Shenzhen Stock Exchange (深交所) - bilateral all day
+  BSE,  // Beijing Stock Exchange (北交所)
+  NEEQ, // National Equities Exchange and Quotations (新三板)
+  UNKNOWN
+};
+
+// Shanghai Stock Exchange (上交所)
+inline bool is_sse_asset(const std::string &prefix) {
+  return prefix == "600" ||  // 沪市主板
+         prefix == "601" ||  // 沪市主板
+         prefix == "603" ||  // 沪市主板
+         prefix == "605" ||  // 沪市主板
+         prefix == "688" ||  // 科创板
+         prefix == "689" ||  // 科创板存托凭证
+         prefix == "900";    // 沪市B股
+}
+
+// Shenzhen Stock Exchange (深交所)
+inline bool is_szse_asset(const std::string &prefix) {
+  return prefix == "000" ||  // 深市主板
+         prefix == "001" ||  // 深市主板
+         prefix == "002" ||  // 深市中小板
+         prefix == "003" ||  // 深市中小板
+         prefix == "004" ||  // 深市中小板
+         prefix == "300" ||  // 创业板
+         prefix == "301" ||  // 创业板
+         prefix == "302" ||  // 创业板
+         prefix == "309" ||  // 创业板存托凭证
+         prefix == "200" ||  // 深市B股
+         prefix == "201";    // 深市B股
+}
+
+// Beijing Stock Exchange (北交所)
+inline bool is_bse_asset(const std::string &asset_code) {
+  if (asset_code.length() < 2)
+    return false;
+  const std::string prefix_2 = asset_code.substr(0, 2);
+  return prefix_2 == "87" ||  // 北交所精选层
+         prefix_2 == "88" ||  // 北交所精选层
+         prefix_2 == "92";    // 北交所
+}
+
+// National Equities Exchange and Quotations (新三板)
+inline bool is_neeq_asset(const std::string &asset_code) {
+  if (asset_code.length() < 2)
+    return false;
+    
+  const std::string prefix_3 = asset_code.length() >= 3 ? asset_code.substr(0, 3) : "";
+  const std::string prefix_2 = asset_code.substr(0, 2);
+  
+  return prefix_3 == "400" ||  // 新三板基础层
+         prefix_3 == "420" ||  // 新三板基础层
+         prefix_3 == "430" ||  // 新三板基础层
+         prefix_2 == "82" ||   // 新三板创新层
+         prefix_2 == "83";     // 新三板创新层
+}
+
+// Infer exchange type from asset code (for order book matching mechanism)
+// Usage: L2::ExchangeType exchange_type = L2::infer_exchange_type("600000.SH");
+inline ExchangeType infer_exchange_type(const std::string &asset_code) {
+  if (asset_code.length() < 2)
+    return ExchangeType::UNKNOWN;
+
+  const std::string prefix_3 = asset_code.length() >= 3 ? asset_code.substr(0, 3) : "";
+  
+  if (is_sse_asset(prefix_3))
+    return ExchangeType::SSE;
+  if (is_szse_asset(prefix_3))
+    return ExchangeType::SZSE;
+  if (is_bse_asset(asset_code))
+    return ExchangeType::BSE;
+  if (is_neeq_asset(asset_code))
+    return ExchangeType::NEEQ;
+    
+  return ExchangeType::UNKNOWN;
+}
+
+// Market asset validation function
+// Returns true ONLY for test assets (600000-600020, 300000-300020)
+// Returns false for all actual market assets
+inline bool is_valid_market_asset(const std::string &asset_code) {
+  if (asset_code.length() < 6)
+    return false;
+
+  const std::string prefix_3 = asset_code.substr(0, 3);
+  
+  // Special case: Test assets 600000-600020 and 300000-300020
+  if (prefix_3 == "600" || prefix_3 == "300") {
+    try {
+      int code_num = std::stoi(asset_code.substr(3));
+      if (code_num >= 0 && code_num <= 20)
+        return true; // Test asset
+    } catch (...) {
+      // Fall through to normal validation
+    }
+  }
+
+  // Exclude all actual market assets
+  if (is_sse_asset(prefix_3))    return false;  // 上交所
+  if (is_szse_asset(prefix_3))   return false;  // 深交所
+  if (is_bse_asset(asset_code))  return false;  // 北交所
+  if (is_neeq_asset(asset_code)) return false;  // 新三板
+
+  return false; // Not a valid market asset (likely an index or other instrument)
+}
+
+//========================================================================================
+// SCHEMA UTILITIES
+//========================================================================================
+
 // Compile-time upper bound calculations based on schema definitions
 namespace SchemaUtils {
 // Helper to find column index by name in schema
@@ -235,68 +349,5 @@ constexpr int ORDER_PRICE_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(
 constexpr int ORDER_VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
 constexpr int ORDER_ID_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_order_id"));
 } // namespace SchemaUtils
-
-// Market asset validation function
-inline bool is_valid_market_asset(const std::string &asset_code) {
-  if (asset_code.length() < 6)
-    return false;
-
-  // Check for specific ranges first: 600000-600020 and 300000-300020
-  if (asset_code.substr(0, 3) == "600") {
-    try {
-      int code_num = std::stoi(asset_code.substr(3));
-      if (code_num >= 0 && code_num <= 20) {
-        return true;
-      }
-    } catch (...) {
-      // Fall through to original logic
-    }
-  } else if (asset_code.substr(0, 3) == "300") {
-    try {
-      int code_num = std::stoi(asset_code.substr(3));
-      if (code_num >= 0 && code_num <= 20) {
-        return true;
-      }
-    } catch (...) {
-      // Fall through to original logic
-    }
-  }
-
-  std::string code_prefix = asset_code.substr(0, 3);
-
-  // Shanghai Stock Exchange (SSE)
-  if (code_prefix == "600" || code_prefix == "601" || code_prefix == "603" || code_prefix == "605" || // 沪市主板
-      0 ||                                                                                            // code_prefix == "900" || // 沪市B股
-      code_prefix == "688" ||                                                                         // 科创板
-      code_prefix == "689") {                                                                         // 科创板存托凭证
-    return false;
-  }
-
-  // Shenzhen Stock Exchange (SZSE)
-  if (code_prefix == "000" || code_prefix == "001" ||                         // 深市主板
-      code_prefix == "002" || code_prefix == "003" || code_prefix == "004" || // 深市中小板
-      0 ||                                                                    // code_prefix == "200" || code_prefix == "201" || // 深市B股
-      code_prefix == "300" || code_prefix == "301" || code_prefix == "302" || // 创业板
-      code_prefix == "309") {                                                 // 创业板存托凭证
-    return false;
-  }
-
-  // NEEQ/Beijing Stock Exchange
-  if (code_prefix == "400" || code_prefix == "420" || code_prefix == "430") { // 新三板基础
-    return false;
-  }
-
-  // Check for 2-digit prefixes for NEEQ
-  if (asset_code.length() >= 2) {
-    std::string code_prefix_2 = asset_code.substr(0, 2);
-    if (code_prefix_2 == "82" || code_prefix_2 == "83" || // 新三板创新层
-        code_prefix_2 == "87" || code_prefix_2 == "88" || // 北交所精选层
-        code_prefix_2 == "92") {                          // 北交所
-      return false;
-    }
-  }
-
-  return false; // Not a valid market asset (likely an index or other instrument)
-}
 
 } // namespace L2
