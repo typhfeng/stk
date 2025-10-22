@@ -101,7 +101,7 @@ public:
       std::cerr << std::endl;
       std::cerr << "[MemoryPool] Capacity exceeded! Initial capacity: " << capacity_ 
                 << ", used: " << used_ << std::endl;
-      exit(0);
+      exit(1);
     }
 
     return &data_[used_++];

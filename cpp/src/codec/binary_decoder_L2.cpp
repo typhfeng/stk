@@ -288,7 +288,7 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
   size_t estimated_count = extract_count_from_filename(filepath);
   if (estimated_count == 0) {
     std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
-    return false;
+    std::exit(1);
   }
 
   // Calculate expected decompressed size
@@ -302,7 +302,7 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
   // Read and decompress data
   size_t actual_size;
   if (!read_and_decompress_data(filepath, data_buffer.get(), expected_size, actual_size)) {
-    return false;
+    std::exit(1);
   }
 
   // Extract count from decompressed data
@@ -313,7 +313,7 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
   if (count != estimated_count) {
     std::cerr << "L2 Decoder: Count mismatch - filename says " << estimated_count
               << " but data says " << count << std::endl;
-    return false;
+    std::exit(1);
   }
 
   // Extract snapshots from decompressed data
@@ -406,7 +406,7 @@ bool BinaryDecoder_L2::decode_orders(const std::string &filepath, std::vector<Or
   size_t estimated_count = extract_count_from_filename(filepath);
   if (estimated_count == 0) {
     std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
-    return false;
+    std::exit(1);
   }
 
   // Calculate expected decompressed size
@@ -420,7 +420,7 @@ bool BinaryDecoder_L2::decode_orders(const std::string &filepath, std::vector<Or
   // Read and decompress data
   size_t actual_size;
   if (!read_and_decompress_data(filepath, data_buffer.get(), expected_size, actual_size)) {
-    return false;
+    std::exit(1);
   }
 
   // Extract count from decompressed data
@@ -431,7 +431,7 @@ bool BinaryDecoder_L2::decode_orders(const std::string &filepath, std::vector<Or
   if (count != estimated_count) {
     std::cerr << "L2 Decoder: Count mismatch - filename says " << estimated_count
               << " but data says " << count << std::endl;
-    return false;
+    std::exit(1);
   }
 
   // Extract orders from decompressed data
@@ -492,7 +492,7 @@ bool BinaryDecoder_L2::read_and_decompress_data(const std::string &filepath, voi
   std::ifstream file(filepath, std::ios::binary);
   if (!file.is_open()) [[unlikely]] {
     std::cerr << "L2 Decoder: Failed to open file for decompression: " << filepath << std::endl;
-    return false;
+    std::exit(1);
   }
 
   // Read header: original size and compressed size
@@ -502,14 +502,14 @@ bool BinaryDecoder_L2::read_and_decompress_data(const std::string &filepath, voi
 
   if (file.fail()) [[unlikely]] {
     std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
-    return false;
+    std::exit(1);
   }
 
   // Verify expected size matches
   if (original_size != expected_size) [[unlikely]] {
     std::cerr << "L2 Decoder: Size mismatch - expected " << expected_size
               << " but header says " << original_size << std::endl;
-    return false;
+    std::exit(1);
   }
 
   // Read compressed data
@@ -518,7 +518,7 @@ bool BinaryDecoder_L2::read_and_decompress_data(const std::string &filepath, voi
 
   if (file.fail()) [[unlikely]] {
     std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
-    return false;
+    std::exit(1);
   }
 
   // Standard Zstandard decompression
@@ -528,13 +528,13 @@ bool BinaryDecoder_L2::read_and_decompress_data(const std::string &filepath, voi
 
   if (ZSTD_isError(decompressed_size)) [[unlikely]] {
     std::cerr << "L2 Decoder: Decompression failed: " << ZSTD_getErrorName(decompressed_size) << std::endl;
-    return false;
+    std::exit(1);
   }
 
   if (decompressed_size != expected_size) [[unlikely]] {
     std::cerr << "L2 Decoder: Decompressed size mismatch - expected " << expected_size
               << " but got " << decompressed_size << std::endl;
-    return false;
+    std::exit(1);
   }
 
   actual_size = decompressed_size;

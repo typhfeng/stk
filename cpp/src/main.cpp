@@ -15,91 +15,98 @@
 #include <filesystem>
 #include <future>
 #include <iostream>
+#include <mutex>
+#include <random>
 #include <regex>
 #include <string>
 #include <vector>
 
 // ============================================================================
-// CSV MODE - L2 Data Processing Architecture
+// L2数据处理架构 - 两阶段并行处理
 // ============================================================================
-// PROCESSING FLOW (Per Asset, Per Day):
 //
-//   1. Configuration Loading
-//      - Read config.json: backtest period (start_date → end_date)
-//      - Read stock_info.json: asset list with IPO/delist dates
-//      - Adjust date ranges based on configuration
+// 【架构概述】
+//   Phase 1: Encoding（编码阶段）
+//     - 多线程并行处理，每个线程负责一个完整的asset
+//     - 单个asset内的日期乱序处理，通过RAR锁协调
+//     - RAR锁采用阻塞模式：撞锁时等待，而非跳过
+//     - 完成一个asset后再领取下一个
 //
-//   2. Thread Pool Initialization
-//      - Create worker threads (1 per CPU core)
-//      - Assign CPU affinity for cache optimization
-//      - Queue assets for parallel processing
+//   Phase 2: Analysis（分析阶段）
+//     - 等待所有encoding完成后启动
+//     - 多asset并行，每个asset内严格按日期顺序处理
+//     - 无需锁机制，纯顺序读取binary文件
 //
-//   3. Archive Extraction (per trading day)
-//      Input:  /mnt/dev/sde/A_stock/L2/YYYY/YYYYMM/YYYYMMDD.rar
-//      Extract: YYYYMMDD/ASSET_CODE/*.csv
-//      Output: output/database/YYYY/MM/DD/ASSET_CODE/(行情.csv, 逐笔成交.csv, 逐笔委托.csv)
+// 【数据流程】
 //
-//      Optimization: Skip if binary files already exist
+//   RAR压缩包 → CSV文件（GBK编码）→ CSV结构体
+//       ↓
+//   L2标准结构 → 编码+压缩 → Binary文件
+//       ↓
+//   解压+解码 → L2结构体 → 高频分析 → 结果输出
 //
-//   4. CSV Parsing (BinaryEncoder_L2)
-//      - Parse 行情.csv → CSVSnapshot structures
-//      - Parse 逐笔委托.csv → CSVOrder structures
-//      - Parse 逐笔成交.csv → CSVTrade structures
+// 【Phase 1: Encoding详细流程】
 //
-//      Data Format Handling:
-//      - SZSE codes: Exchange code varies by year (2025+: "1", earlier: "000001")
-//      - Order types: SZSE 2025+: 0/1/U (normal/special/cancel), SSE: A/D (add/delete)
-//      - NaN values: Handle space (\x20) and null (\x00) characters
-//      - Price units: 0.01 RMB (CSV in 0.0001 RMB, divide by 100)
-//      - Volume units: 100 shares (CSV in shares, divide by 100)
+//   1. 配置加载
+//      - config.json: 回测时间区间
+//      - stock_info.json: 资产列表及上市/退市日期
 //
-//   5. Binary Encoding (BinaryEncoder_L2)
-//      - Convert CSV structures → L2::Snapshot and L2::Order
-//      - Merge orders and trades into unified timeline
-//      - Sort by timestamp with priority: maker → taker → cancel
-//      - Apply optional delta encoding (ENABLE_DELTA_ENCODING)
-//      - Compress using Zstandard (level 6, ~3x ratio)
-//      - Write to: ASSET_CODE_snapshots_COUNT.bin, ASSET_CODE_orders_COUNT.bin
+//   2. 任务分配
+//      - 按asset分配任务，每个任务包含该asset的所有交易日
+//      - Worker从队列领取asset，处理完再领取下一个
+//      - 同一时刻，一个Worker只处理一个asset
 //
-//   6. Binary Decoding (BinaryDecoder_L2)
-//      - Decompress binary files (Zstandard)
-//      - Apply delta decoding if enabled
-//      - Reconstruct L2::Snapshot and L2::Order structures
+//   3. 单Asset处理（日期乱序）
+//      - Shuffle日期列表，分散RAR访问压力
+//      - 对每个日期：
+//        a) 获取RAR锁（阻塞等待，确保同一RAR不被并发解压）
+//        b) 解压: /path/YYYYMMDD.rar → YYYYMMDD/ASSET_CODE/*.csv
+//        c) 解析CSV: 行情.csv + 逐笔委托.csv + 逐笔成交.csv
+//        d) 编码: CSV → L2结构 → Zstd压缩 → .bin文件
+//        e) 释放RAR锁
 //
-//   7. High-Frequency Analysis (LimitOrderBook)
-//      - Process order stream to reconstruct order book
-//      - Track maker orders, cancellations, and trades
-//      - Maintain 10-level bid/ask queues
-//      - Generate analysis/signals per strategy requirements
+//   4. 数据格式处理
+//      - SZSE代码: 2025+年用"1"，早期用"000001"
+//      - 订单类型: SZSE用0/1/U，SSE用A/D
+//      - 价格单位: 0.01元（CSV为0.0001元，除以100）
+//      - 数量单位: 100股（CSV为股数，除以100）
 //
-// DATA FLOW DIAGRAM:
+//   5. 进度显示
+//      - 每个Worker固定一行显示
+//      - 显示: [进度条] 百分比 (当前日期/总日期) Asset代码 - 日期
+//      - Asset代码固定不变，日期随处理进度更新
 //
-//   RAR Archive (compressed)
-//        ↓
-//   CSV Files (text, GBK encoding)
-//        ↓ [Parser]
-//   CSV Structures (intermediate)
-//        ↓ [Converter]
-//   L2 Structures (normalized)
-//        ↓ [Encoder + Zstd]
-//   Binary Files (compressed, optional delta)
-//        ↓ [Zstd + Decoder]
-//   L2 Structures (in-memory)
-//        ↓ [Analysis]
-//   Results / Signals
+// 【Phase 2: Analysis详细流程】
 //
-// THREAD SAFETY:
-//   - Each thread processes one asset independently
-//   - No shared state between asset processors
-//   - Temporary extraction directories use unique names (tmp_ASSET_CODE)
-//   - CPU affinity prevents thread migration and cache thrashing
+//   1. 等待Encoding完成
+//      - 确保所有binary文件已生成
 //
-// OPTIMIZATION STRATEGIES:
-//   - Binary caching: Skip extraction if binaries exist (SKIP_EXISTING_BINARIES)
-//   - Parallel processing: Use all CPU cores with affinity
-//   - Memory pre-allocation: Reserve vectors based on estimated sizes
-//   - Delta encoding: Reduce data size for time-series fields
-//   - Zstandard compression: Fast decompression (1300+ MB/s) with good ratio
+//   2. 并行分析
+//      - 每个Worker领取一个asset
+//      - 严格按日期顺序读取binary文件
+//      - 重建order book，生成分析信号
+//
+//   3. 订单簿重建
+//      - 处理maker/taker/cancel订单
+//      - 维护10档买卖队列
+//      - 生成策略信号
+//
+// 【线程安全】
+//   - Encoding阶段：
+//     * 每个Worker独立处理一个asset，无状态共享
+//     * RAR锁确保同一压缩包不被并发解压
+//     * CPU亲和性绑定避免线程迁移
+//
+//   - Analysis阶段：
+//     * 只读binary文件，无并发写入
+//     * 无需锁机制
+//
+// 【性能优化】
+//   - Binary缓存: 跳过已存在的binary文件
+//   - 日期乱序: 分散RAR访问，提高并发度
+//   - CPU亲和性: 减少cache miss
+//   - Zstd压缩: 解压速度1300+ MB/s
+//   - 内存预分配: 基于历史数据量
 //
 // ============================================================================
 // CONFIGURATION SECTION
@@ -128,296 +135,343 @@ constexpr const char *DEFAULT_TEMP_DIR = "../../../../output/database";
 // Processing settings - modify for different behaviors
 constexpr bool CLEANUP_AFTER_PROCESSING = false; // Clean up temp files after processing (saves disk space)
 constexpr bool SKIP_EXISTING_BINARIES = true;    // Skip extraction/encoding if binary files exist (faster rerun)
-constexpr bool VERBOSE_LOGGING = false;          // Enable detailed logging for debugging
 
 } // namespace Config
 
 // ============================================================================
-// LAYER 1: LOW-LEVEL UTILITY CLASSES
+// UTILITY FUNCTIONS
 // ============================================================================
-// These classes provide basic utilities and have no dependencies on other classes
 
-// Path utilities
-class PathUtils {
-public:
-  static std::string generate_archive_path(const std::string &base_dir, const std::string &date_str) {
-    const std::string year = date_str.substr(0, 4);
-    const std::string year_month = date_str.substr(0, 6);
-    return base_dir + "/" + year + "/" + year_month + "/" + date_str + Config::ARCHIVE_EXTENSION;
+namespace Utils {
+inline std::string generate_archive_path(const std::string &base_dir, const std::string &date_str) {
+  const std::string year = date_str.substr(0, 4);
+  const std::string year_month = date_str.substr(0, 6);
+  return base_dir + "/" + year + "/" + year_month + "/" + date_str + Config::ARCHIVE_EXTENSION;
+}
+
+inline std::string generate_temp_asset_dir(const std::string &temp_dir, const std::string &date_str, const std::string &asset_code) {
+  return temp_dir + "/" + date_str.substr(0, 4) + "/" + date_str.substr(4, 2) + "/" + date_str.substr(6, 2) + "/" + asset_code;
+}
+
+inline bool is_leap_year(int year) {
+  return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+}
+
+inline int get_days_in_month(int year, int month) {
+  if (month == 2) {
+    return is_leap_year(year) ? 29 : 28;
   }
-
-  static std::string generate_temp_asset_dir(const std::string &temp_dir, const std::string &date_str, const std::string &asset_code) {
-    return temp_dir + "/" + date_str.substr(0, 4) + "/" + date_str.substr(4, 2) + "/" + date_str.substr(6, 2) + "/" + asset_code;
+  if (month == 4 || month == 6 || month == 9 || month == 11) {
+    return 30;
   }
+  return 31;
+}
 
-  static bool is_leap_year(int year) {
-    return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
-  }
+inline std::vector<std::string> generate_date_range(const std::string &start_date, const std::string &end_date, const std::string &l2_archive_base) {
+  std::vector<std::string> dates;
 
-  static int get_days_in_month(int year, int month) {
-    if (month == 2) {
-      return is_leap_year(year) ? 29 : 28;
-    }
-    if (month == 4 || month == 6 || month == 9 || month == 11) {
-      return 30;
-    }
-    return 31;
-  }
-};
+  std::regex date_regex(R"((\d{4})_(\d{2})_(\d{2}))");
+  std::smatch start_match, end_match;
 
-// Date range generator
-class DateRangeGenerator {
-public:
-  static std::vector<std::string> generate_date_range(const std::string &start_date, const std::string &end_date, const std::string &l2_archive_base) {
-    std::vector<std::string> dates;
-
-    std::regex date_regex(R"((\d{4})_(\d{2})_(\d{2}))");
-    std::smatch start_match, end_match;
-
-    if (!std::regex_match(start_date, start_match, date_regex) || !std::regex_match(end_date, end_match, date_regex)) {
-      return dates;
-    }
-
-    const int start_year = std::stoi(start_match[1]);
-    const int start_mon = std::stoi(start_match[2]);
-    const int start_day = std::stoi(start_match[3]);
-    const int end_year = std::stoi(end_match[1]);
-    const int end_mon = std::stoi(end_match[2]);
-    const int end_day = std::stoi(end_match[3]);
-
-    const bool has_archive_base = std::filesystem::exists(l2_archive_base);
-
-    for (int year = start_year; year <= end_year; ++year) {
-      const int mon_start = (year == start_year) ? start_mon : 1;
-      const int mon_end = (year == end_year) ? end_mon : 12;
-
-      for (int month = mon_start; month <= mon_end; ++month) {
-        const int day_start = (year == start_year && month == start_mon) ? start_day : 1;
-        const int day_end = (year == end_year && month == end_mon) ? end_day : PathUtils::get_days_in_month(year, month);
-
-        for (int day = day_start; day <= day_end; ++day) {
-          char date_buf[9];
-          snprintf(date_buf, sizeof(date_buf), "%04d%02d%02d", year, month, day);
-          const std::string date_str(date_buf);
-
-          if (!has_archive_base || std::filesystem::exists(PathUtils::generate_archive_path(l2_archive_base, date_str))) {
-            dates.push_back(date_str);
-          }
-        }
-      }
-    }
-
+  if (!std::regex_match(start_date, start_match, date_regex) || !std::regex_match(end_date, end_match, date_regex)) {
     return dates;
   }
-};
 
-// ============================================================================
-// LAYER 2: FILE MANAGEMENT CLASSES
-// ============================================================================
-// These classes handle file extraction, checking, and cleanup
+  const int start_year = std::stoi(start_match[1]);
+  const int start_mon = std::stoi(start_match[2]);
+  const int start_day = std::stoi(start_match[3]);
+  const int end_year = std::stoi(end_match[1]);
+  const int end_mon = std::stoi(end_match[2]);
+  const int end_day = std::stoi(end_match[3]);
 
-// Archive extraction and file management
-class FileManager {
-public:
-  // Extract asset CSV files from archive
-  static bool extract_asset_csv(const std::string &archive_path, const std::string &asset_code, const std::string &temp_dir) {
-    if (!std::filesystem::exists(archive_path)) {
-      return false;
-    }
+  const bool has_archive_base = std::filesystem::exists(l2_archive_base);
 
-    std::filesystem::create_directories(temp_dir);
+  for (int year = start_year; year <= end_year; ++year) {
+    const int mon_start = (year == start_year) ? start_mon : 1;
+    const int mon_end = (year == end_year) ? end_mon : 12;
 
-    const std::string archive_name = std::filesystem::path(archive_path).stem().string();
-    const std::string asset_path_in_archive = archive_name + "/" + asset_code + "/*";
-    const std::string command = std::string(Config::ARCHIVE_TOOL) + " " +
-                                std::string(Config::ARCHIVE_EXTRACT_CMD) + " \"" +
-                                archive_path + "\" \"" + asset_path_in_archive + "\" \"" +
-                                temp_dir + "/\" -y > /dev/null 2>&1";
+    for (int month = mon_start; month <= mon_end; ++month) {
+      const int day_start = (year == start_year && month == start_mon) ? start_day : 1;
+      const int day_end = (year == end_year && month == end_mon) ? end_day : get_days_in_month(year, month);
 
-    return std::system(command.c_str()) == 0;
-  }
+      for (int day = day_start; day <= day_end; ++day) {
+        char date_buf[9];
+        snprintf(date_buf, sizeof(date_buf), "%04d%02d%02d", year, month, day);
+        const std::string date_str(date_buf);
 
-  // Check for existing binary files
-  static std::pair<bool, std::pair<std::string, std::string>> check_existing_binaries(const std::string &temp_asset_dir, const std::string &asset_code) {
-    if (!std::filesystem::exists(temp_asset_dir)) {
-      return {false, {"", ""}};
-    }
-
-    std::string snapshots_file, orders_file;
-    for (const auto &entry : std::filesystem::directory_iterator(temp_asset_dir)) {
-      const std::string filename = entry.path().filename().string();
-      if (filename.starts_with(asset_code + "_snapshots_") && filename.ends_with(Config::BIN_EXTENSION)) {
-        snapshots_file = entry.path().string();
-      } else if (filename.starts_with(asset_code + "_orders_") && filename.ends_with(Config::BIN_EXTENSION)) {
-        orders_file = entry.path().string();
-      }
-    }
-
-    return {!snapshots_file.empty() || !orders_file.empty(), {snapshots_file, orders_file}};
-  }
-
-  // Remove temporary directory
-  static void cleanup_temp_files(const std::string &temp_dir) {
-    if (std::filesystem::exists(temp_dir)) {
-      std::filesystem::remove_all(temp_dir);
-    }
-  }
-};
-
-// ============================================================================
-// LAYER 3: DATA PROCESSING CLASSES
-// ============================================================================
-// These classes handle CSV parsing and binary encoding/decoding
-
-// CSV parsing and binary encoding
-class DataEncoder {
-public:
-  // Parse CSV files and encode to binary structures
-  static bool parse_and_encode_csv(const std::string &csv_dir, const std::string &asset_code, L2::BinaryEncoder_L2 &encoder, std::vector<L2::Snapshot> &snapshots, std::vector<L2::Order> &orders) {
-    return encoder.process_stock_data(csv_dir, csv_dir, asset_code, &snapshots, &orders);
-  }
-};
-
-// Binary data loading and analysis
-class DataAnalyzer {
-public:
-  // Load binary data and run high-frequency analysis
-  static bool load_and_analyze(const std::string &snapshots_file, const std::string &orders_file, L2::BinaryDecoder_L2 &decoder, LimitOrderBook *analyzer) {
-    (void)snapshots_file; // Reserved for future snapshot processing
-
-    // // Decode snapshots (currently disabled, enable when needed)
-    // if (!snapshots_file.empty()) {
-    //   std::vector<L2::Snapshot> decoded_snapshots;
-    //   decode_success &= decoder.decode_snapshots(snapshots_file, decoded_snapshots);
-    //   // decoder.print_all_snapshots(decoded_snapshots);
-    // }
-    if (!orders_file.empty()) {
-      std::vector<L2::Order> decoded_orders;
-      if (!decoder.decode_orders(orders_file, decoded_orders)) {
-        return false;
-      }
-
-      if (analyzer) {
-        for (const auto &ord : decoded_orders) {
-          analyzer->process(ord);
+        if (!has_archive_base || std::filesystem::exists(generate_archive_path(l2_archive_base, date_str))) {
+          dates.push_back(date_str);
         }
-        analyzer->clear();
       }
     }
-    return true;
+  }
+
+  return dates;
+}
+} // namespace Utils
+
+// ============================================================================
+// RAR LOCK MANAGER
+// ============================================================================
+// Manages per-archive locks to prevent concurrent extraction from same RAR
+
+class RarLockManager {
+private:
+  static std::unordered_map<std::string, std::unique_ptr<std::mutex>> &get_locks() {
+    static std::unordered_map<std::string, std::unique_ptr<std::mutex>> locks;
+    return locks;
+  }
+
+  static std::mutex &get_map_mutex() {
+    static std::mutex mutex;
+    return mutex;
+  }
+
+public:
+  static std::mutex *get_or_create_lock(const std::string &archive_path) {
+    std::lock_guard<std::mutex> lock(get_map_mutex());
+    auto &locks = get_locks();
+    if (locks.find(archive_path) == locks.end()) {
+      locks[archive_path] = std::make_unique<std::mutex>();
+    }
+    return locks[archive_path].get();
   }
 };
 
 // ============================================================================
-// LAYER 4: BUSINESS LOGIC CLASSES
+// TASK AND DATA STRUCTURES
 // ============================================================================
-// These classes orchestrate the high-level processing workflow
 
-// Asset processing workflow
-class AssetProcessor {
-public:
-  static bool process_single_day(const std::string &asset_code, const std::string &date_str, const std::string &temp_base_dir, const std::string &l2_archive_base, L2::BinaryEncoder_L2 &encoder, L2::BinaryDecoder_L2 &decoder, LimitOrderBook &analyzer) {
-    const std::string archive_path = PathUtils::generate_archive_path(l2_archive_base, date_str);
-    const std::string temp_asset_dir = PathUtils::generate_temp_asset_dir(temp_base_dir, date_str, asset_code);
+struct AssetTask {
+  std::string asset_code;
+  std::string asset_name;
+  std::vector<std::string> dates; // all dates for this asset
+};
 
-    const auto [has_binaries, binary_files] = FileManager::check_existing_binaries(temp_asset_dir, asset_code);
-    const auto &[snapshots_file, orders_file] = binary_files;
+struct BinaryFiles {
+  std::string snapshots_file;
+  std::string orders_file;
+  bool exists() const { return !snapshots_file.empty() || !orders_file.empty(); }
+};
 
-    if (has_binaries && Config::SKIP_EXISTING_BINARIES) {
-      return DataAnalyzer::load_and_analyze(snapshots_file, orders_file, decoder, &analyzer);
+// ============================================================================
+// ENCODING FUNCTIONS
+// ============================================================================
+
+namespace Encoding {
+inline BinaryFiles check_existing_binaries(const std::string &temp_asset_dir, const std::string &asset_code) {
+  if (!std::filesystem::exists(temp_asset_dir)) {
+    return {"", ""};
+  }
+
+  BinaryFiles result;
+  for (const auto &entry : std::filesystem::directory_iterator(temp_asset_dir)) {
+    const std::string filename = entry.path().filename().string();
+    if (filename.starts_with(asset_code + "_snapshots_") && filename.ends_with(Config::BIN_EXTENSION)) {
+      result.snapshots_file = entry.path().string();
+    } else if (filename.starts_with(asset_code + "_orders_") && filename.ends_with(Config::BIN_EXTENSION)) {
+      result.orders_file = entry.path().string();
     }
+  }
+  return result;
+}
 
-    // Extract from archive
-    const std::string temp_extract_dir = temp_base_dir + "/tmp_" + asset_code;
-    if (!FileManager::extract_asset_csv(archive_path, asset_code, temp_extract_dir)) {
+inline bool extract_and_encode(const std::string &archive_path, const std::string &asset_code, const std::string &date_str, const std::string &temp_dir, L2::BinaryEncoder_L2 &encoder) {
+  // Acquire lock (blocking)
+  std::mutex *archive_lock = RarLockManager::get_or_create_lock(archive_path);
+  std::lock_guard<std::mutex> lock(*archive_lock);
+
+  // Extract from archive
+  const std::string temp_extract_dir = temp_dir + "/tmp_" + asset_code;
+  std::filesystem::create_directories(temp_extract_dir);
+
+  const std::string archive_name = std::filesystem::path(archive_path).stem().string();
+  const std::string asset_path_in_archive = archive_name + "/" + asset_code + "/*";
+  const std::string command = std::string(Config::ARCHIVE_TOOL) + " " +
+                              std::string(Config::ARCHIVE_EXTRACT_CMD) + " \"" +
+                              archive_path + "\" \"" + asset_path_in_archive + "\" \"" +
+                              temp_extract_dir + "/\" -y > /dev/null 2>&1";
+
+  if (std::system(command.c_str()) != 0) {
+    std::filesystem::remove_all(temp_extract_dir);
+    return false;
+  }
+
+  const std::string extracted_dir = temp_extract_dir + "/" + date_str + "/" + asset_code;
+  if (!std::filesystem::exists(extracted_dir)) {
+    std::filesystem::remove_all(temp_extract_dir);
+    return false;
+  }
+
+  // Move to final location
+  const std::string temp_asset_dir = Utils::generate_temp_asset_dir(temp_dir, date_str, asset_code);
+  std::filesystem::create_directories(std::filesystem::path(temp_asset_dir).parent_path());
+
+  // Remove target if exists to avoid rename failure
+  if (std::filesystem::exists(temp_asset_dir)) {
+    std::filesystem::remove_all(temp_asset_dir);
+  }
+
+  std::filesystem::rename(extracted_dir, temp_asset_dir);
+  std::filesystem::remove_all(temp_extract_dir);
+
+  // Parse and encode
+  std::vector<L2::Snapshot> snapshots;
+  std::vector<L2::Order> orders;
+  if (!encoder.process_stock_data(temp_asset_dir, temp_asset_dir, asset_code, &snapshots, &orders)) {
+    return false;
+  }
+
+  // Validate data counts
+  constexpr size_t MIN_EXPECTED_COUNT = 1000;
+  if (!snapshots.empty() && snapshots.size() < MIN_EXPECTED_COUNT) {
+    Logger::log_parsing_error("Abnormal snapshot count: " + asset_code + " " + date_str +
+                              " has only " + std::to_string(snapshots.size()) + " snapshots");
+    std::exit(1);
+  }
+  if (!orders.empty() && orders.size() < MIN_EXPECTED_COUNT) {
+    Logger::log_parsing_error("Abnormal order count: " + asset_code + " " + date_str +
+                              " has only " + std::to_string(orders.size()) + " orders");
+    std::exit(1);
+  }
+
+  // Clean up CSV files
+  for (const auto &entry : std::filesystem::directory_iterator(temp_asset_dir)) {
+    if (entry.path().string().ends_with(".csv")) {
+      std::filesystem::remove(entry.path());
+    }
+  }
+
+  return true;
+}
+} // namespace Encoding
+
+// ============================================================================
+// ANALYSIS FUNCTIONS
+// ============================================================================
+
+namespace Analysis {
+inline bool process_binary_files(const BinaryFiles &files, L2::BinaryDecoder_L2 &decoder, LimitOrderBook &analyzer) {
+  if (!files.orders_file.empty()) {
+    std::vector<L2::Order> decoded_orders;
+    if (!decoder.decode_orders(files.orders_file, decoded_orders)) {
       return false;
     }
 
-    const std::string extracted_dir = temp_extract_dir + "/" + date_str + "/" + asset_code;
-    if (!std::filesystem::exists(extracted_dir)) {
-      FileManager::cleanup_temp_files(temp_extract_dir);
-      return false;
+    for (const auto &ord : decoded_orders) {
+      analyzer.process(ord);
+    }
+    analyzer.clear();
+  }
+  return true;
+}
+} // namespace Analysis
+
+// ============================================================================
+// PHASE 1: ENCODING WORKER
+// ============================================================================
+
+void encoding_worker(std::vector<AssetTask> &asset_queue, std::mutex &queue_mutex, std::atomic<size_t> &completed_assets, const std::string &l2_archive_base, const std::string &temp_dir, unsigned int core_id, misc::ProgressHandle progress_handle) {
+  static thread_local bool affinity_set = false;
+  if (!affinity_set && misc::Affinity::supported()) {
+    affinity_set = misc::Affinity::pin_to_core(core_id);
+  }
+
+  L2::BinaryEncoder_L2 encoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
+
+  while (true) {
+    AssetTask asset_task;
+
+    // Get an asset
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex);
+      if (asset_queue.empty()) {
+        break; // No more assets
+      }
+      asset_task = asset_queue.back();
+      asset_queue.pop_back();
     }
 
-    std::filesystem::create_directories(std::filesystem::path(temp_asset_dir).parent_path());
-    std::filesystem::rename(extracted_dir, temp_asset_dir);
-    FileManager::cleanup_temp_files(temp_extract_dir);
+    // Set label to this asset (fixed for this asset's lifetime)
+    const std::string label = asset_task.asset_code + " (" + asset_task.asset_name + ")";
+    progress_handle.set_label(label);
 
-    // Parse and encode
-    std::vector<L2::Snapshot> snapshots;
-    std::vector<L2::Order> orders;
-    if (!DataEncoder::parse_and_encode_csv(temp_asset_dir, asset_code, encoder, snapshots, orders)) {
-      return false;
-    }
-    // Debug: uncomment to inspect parsed data
-    // decoder.print_all_snapshots(snapshots);
-    // decoder.print_all_orders(orders);
-    // exit(1);
+    // Shuffle dates for this asset to spread RAR access
+    std::vector<std::string> dates = asset_task.dates;
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::shuffle(dates.begin(), dates.end(), g);
 
-    // Validate data counts before cleanup
-    constexpr size_t MIN_EXPECTED_COUNT = 1000;
-    if (!snapshots.empty() && snapshots.size() < MIN_EXPECTED_COUNT) [[unlikely]] {
-      Logger::log_parsing_error("Abnormal snapshot count: " + asset_code + " " + date_str + 
-                               " has only " + std::to_string(snapshots.size()) + " snapshots (expected >= " + 
-                               std::to_string(MIN_EXPECTED_COUNT) + ")");
-      std::exit(0);
-    }
-    if (!orders.empty() && orders.size() < MIN_EXPECTED_COUNT) [[unlikely]] {
-      Logger::log_parsing_error("Abnormal order count: " + asset_code + " " + date_str + 
-                               " has only " + std::to_string(orders.size()) + " orders (expected >= " + 
-                               std::to_string(MIN_EXPECTED_COUNT) + ")");
-      std::exit(0);
-    }
+    // Process all dates for this asset
+    for (size_t i = 0; i < dates.size(); ++i) {
+      const std::string &date_str = dates[i];
+      const std::string temp_asset_dir = Utils::generate_temp_asset_dir(temp_dir, date_str, asset_task.asset_code);
+      const BinaryFiles existing = Encoding::check_existing_binaries(temp_asset_dir, asset_task.asset_code);
 
-    const std::string snap_file = snapshots.empty() ? "" : temp_asset_dir + "/" + asset_code + "_snapshots_" + std::to_string(snapshots.size()) + Config::BIN_EXTENSION;
-    const std::string ord_file = orders.empty() ? "" : temp_asset_dir + "/" + asset_code + "_orders_" + std::to_string(orders.size()) + Config::BIN_EXTENSION;
+      if (existing.exists() && Config::SKIP_EXISTING_BINARIES) {
+        progress_handle.update(i + 1, dates.size(), date_str);
+        continue;
+      }
 
-    // Clean up CSV files
-    for (const auto &entry : std::filesystem::directory_iterator(temp_asset_dir)) {
-      if (entry.path().string().ends_with(".csv")) {
-        std::filesystem::remove(entry.path());
+      // Encode (blocking on RAR lock if needed)
+      const std::string archive_path = Utils::generate_archive_path(l2_archive_base, date_str);
+      bool success = Encoding::extract_and_encode(archive_path, asset_task.asset_code, date_str, temp_dir, encoder);
+
+      // Always update progress regardless of success/failure
+      progress_handle.update(i + 1, dates.size(), date_str);
+
+      if (success && Config::CLEANUP_AFTER_PROCESSING) {
+        std::filesystem::remove_all(temp_asset_dir);
       }
     }
 
-    return DataAnalyzer::load_and_analyze(snap_file, ord_file, decoder, &analyzer);
+    // Increment completed assets counter after finishing all dates for this asset
+    ++completed_assets;
   }
-};
+}
 
-// Application configuration management
-class AppConfiguration {
-public:
-  struct Paths {
-    std::string config_file;
-    std::string stock_info_file;
-    std::string l2_archive_base;
-    std::string TEMP_DIR;
-  };
+// ============================================================================
+// PHASE 2: ANALYSIS PROCESSOR
+// ============================================================================
 
-  static Paths get_default_paths() {
-    return {
-        Config::DEFAULT_CONFIG_FILE,
-        Config::DEFAULT_STOCK_INFO_FILE,
-        Config::DEFAULT_L2_ARCHIVE_BASE,
-        Config::DEFAULT_TEMP_DIR};
+void process_analysis_for_asset(const std::string &asset_code, const std::vector<std::string> &dates, const std::string &temp_dir, misc::ProgressHandle progress_handle) {
+  L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
+  L2::ExchangeType exchange_type = L2::infer_exchange_type(asset_code);
+  LimitOrderBook analyzer(L2::DEFAULT_ENCODER_ORDER_SIZE, exchange_type);
+
+  for (size_t i = 0; i < dates.size(); ++i) {
+    const std::string &date_str = dates[i];
+    const std::string temp_asset_dir = Utils::generate_temp_asset_dir(temp_dir, date_str, asset_code);
+    const BinaryFiles files = Encoding::check_existing_binaries(temp_asset_dir, asset_code);
+
+    if (files.exists()) {
+      Analysis::process_binary_files(files, decoder, analyzer);
+    }
+
+    progress_handle.update(i + 1, dates.size(), date_str);
   }
+}
 
-  static void print_summary(const Paths &paths, const JsonConfig::AppConfig &app_config, size_t total_assets) {
-    std::cout << "Configuration:" << "\n";
-    std::cout << "  Archive: " << Config::ARCHIVE_TOOL << " (" << Config::ARCHIVE_EXTENSION << ")\n";
-    std::cout << "  L2 base: " << paths.l2_archive_base << "\n";
-    std::cout << "  Temp dir: " << paths.TEMP_DIR << "\n";
-    std::cout << "  Period: " << JsonConfig::FormatYearMonthDay(app_config.start_date)
-              << " → " << JsonConfig::FormatYearMonthDay(app_config.end_date) << "\n";
-    std::cout << "  Assets: " << total_assets << "\n";
-    std::cout << "  Skip existing: " << (Config::SKIP_EXISTING_BINARIES ? "Yes" : "No") << "\n";
-    std::cout << "  Auto cleanup: " << (Config::CLEANUP_AFTER_PROCESSING ? "Yes" : "No") << "\n";
-    std::cout << "  Verbose: " << (Config::VERBOSE_LOGGING ? "Yes" : "No") << "\n\n";
-  }
+// ============================================================================
+// MAIN ENTRY POINT
+// ============================================================================
 
-  static void adjust_stock_dates(std::unordered_map<std::string, JsonConfig::StockInfo> &stock_info_map, const JsonConfig::AppConfig &app_config) {
+int main() {
+  try {
+    std::cout << "=== L2 Data Processor (CSV Mode) ===" << "\n";
+
+    // Load configuration
+    const std::string config_file = Config::DEFAULT_CONFIG_FILE;
+    const std::string stock_info_file = Config::DEFAULT_STOCK_INFO_FILE;
+    const std::string l2_archive_base = Config::DEFAULT_L2_ARCHIVE_BASE;
+    const std::string temp_dir = Config::DEFAULT_TEMP_DIR;
+
+    const JsonConfig::AppConfig app_config = JsonConfig::ParseAppConfig(config_file);
+    auto stock_info_map = JsonConfig::ParseStockInfo(stock_info_file);
+
+    // Adjust stock dates based on config
     const std::chrono::year_month config_start{app_config.start_date.year(), app_config.start_date.month()};
     const std::chrono::year_month config_end{app_config.end_date.year(), app_config.end_date.month()};
-
     for (auto &[code, info] : stock_info_map) {
       if (info.start_date < config_start) {
         info.start_date = config_start;
@@ -426,138 +480,120 @@ public:
         info.end_date = config_end;
       }
     }
-  }
-};
 
-// Forward declaration of ProcessAsset function
-void ProcessAsset(const std::string &asset_code, const JsonConfig::StockInfo &stock_info, const JsonConfig::AppConfig &app_config, const std::string &l2_archive_base, const std::string &TEMP_DIR, unsigned int core_id, misc::ProgressHandle progress_handle);
+    // Print summary
+    std::cout << "Configuration:" << "\n";
+    std::cout << "  Archive: " << Config::ARCHIVE_TOOL << " (" << Config::ARCHIVE_EXTENSION << ")\n";
+    std::cout << "  L2 base: " << l2_archive_base << "\n";
+    std::cout << "  Temp dir: " << temp_dir << "\n";
+    std::cout << "  Period: " << JsonConfig::FormatYearMonthDay(app_config.start_date)
+              << " → " << JsonConfig::FormatYearMonthDay(app_config.end_date) << "\n";
+    std::cout << "  Assets: " << stock_info_map.size() << "\n";
+    std::cout << "  Skip existing: " << (Config::SKIP_EXISTING_BINARIES ? "Yes" : "No") << "\n";
+    std::cout << "  Auto cleanup: " << (Config::CLEANUP_AFTER_PROCESSING ? "Yes" : "No") << "\n\n";
 
-// Parallel asset processing with thread pool
-class ParallelProcessor {
-public:
-  static void run(const std::unordered_map<std::string, JsonConfig::StockInfo> &stock_info_map, const JsonConfig::AppConfig &app_config, const AppConfiguration::Paths &paths) {
+    std::filesystem::create_directories(temp_dir);
+    Logger::init(temp_dir);
+
     const unsigned int num_threads = misc::Affinity::core_count();
-    const unsigned int num_assets = stock_info_map.size();
-    const unsigned int num_workers = std::min(num_threads, num_assets);
+    const unsigned int num_workers = std::min(num_threads, static_cast<unsigned int>(stock_info_map.size()));
 
     std::cout << "Threads: " << num_threads;
     if (misc::Affinity::supported()) {
       std::cout << " (CPU affinity enabled)";
     }
     std::cout << "\n";
-    std::cout << "Workers: " << num_workers << " (processing " << num_assets << " assets)\n\n";
+    std::cout << "Workers: " << num_workers << " (processing " << stock_info_map.size() << " assets)\n\n";
 
-    // Initialize parallel progress tracker (only allocate needed workers)
-    auto progress_tracker = std::make_shared<misc::ParallelProgress>(num_workers);
+    // ========================================================================
+    // PHASE 1: ENCODING (can be out-of-order, uses RAR locks)
+    // ========================================================================
+    std::cout << "=== Phase 1: Encoding ===" << "\n";
 
-    // Process all assets using thread pool
-    std::vector<std::future<void>> tasks;
-    tasks.reserve(num_threads);
-    auto stock_iter = stock_info_map.begin();
+    // Build asset queue and count total tasks
+    std::vector<AssetTask> asset_queue;
 
-    while (stock_iter != stock_info_map.end()) {
+    for (const auto &[asset_code, stock_info] : stock_info_map) {
+      std::chrono::year_month_day stock_start_ymd{stock_info.start_date / std::chrono::day{1}};
+      std::chrono::year_month_day stock_end_ymd{stock_info.end_date / std::chrono::last};
+      std::chrono::year_month_day effective_start = (stock_start_ymd > app_config.start_date) ? stock_start_ymd : app_config.start_date;
+      std::chrono::year_month_day effective_end = (stock_end_ymd < app_config.end_date) ? stock_end_ymd : app_config.end_date;
+
+      const std::string start_formatted = JsonConfig::FormatYearMonthDay(effective_start);
+      const std::string end_formatted = JsonConfig::FormatYearMonthDay(effective_end);
+      const std::vector<std::string> dates = Utils::generate_date_range(start_formatted, end_formatted, l2_archive_base);
+
+      if (!dates.empty()) {
+        asset_queue.push_back({asset_code, stock_info.name, dates});
+      }
+    }
+
+    // Save a copy for Phase 2 to reuse
+    std::vector<AssetTask> asset_queue_for_analysis = asset_queue;
+
+    std::mutex queue_mutex;
+    std::atomic<size_t> encoding_completed_assets{0};
+
+    auto encoding_progress = std::make_shared<misc::ParallelProgress>(num_workers);
+    std::vector<std::future<void>> encoding_workers;
+
+    for (unsigned int i = 0; i < num_workers; ++i) {
+      encoding_workers.push_back(
+          std::async(std::launch::async, encoding_worker, std::ref(asset_queue), std::ref(queue_mutex), std::ref(encoding_completed_assets), std::cref(l2_archive_base), std::cref(temp_dir), i, encoding_progress->acquire_slot("")));
+    }
+
+    for (auto &worker : encoding_workers) {
+      worker.wait();
+    }
+    encoding_progress->stop();
+
+    std::cout << "Encoding complete: " << encoding_completed_assets << " / " << asset_queue_for_analysis.size() << " assets\n\n";
+
+    // ========================================================================
+    // PHASE 2: ANALYSIS (strictly sequential per asset)
+    // ========================================================================
+    std::cout << "=== Phase 2: Analysis ===" << "\n";
+
+    auto analysis_progress = std::make_shared<misc::ParallelProgress>(num_workers);
+    std::vector<std::future<void>> analysis_tasks;
+
+    size_t asset_idx = 0;
+    while (asset_idx < asset_queue_for_analysis.size()) {
       // Wait for slot if at capacity
-      if (tasks.size() >= num_workers) {
-        // Remove completed tasks
-        tasks.erase(
-          std::remove_if(tasks.begin(), tasks.end(),
-            [](std::future<void> &f) { 
-              return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready; 
-            }),
-          tasks.end()
-        );
-        
-        // If still at capacity, wait for first one
-        if (tasks.size() >= num_workers && !tasks.empty()) {
-          tasks.front().wait();
-          tasks.erase(tasks.begin());
+      if (analysis_tasks.size() >= num_workers) {
+        analysis_tasks.erase(
+            std::remove_if(analysis_tasks.begin(), analysis_tasks.end(),
+                           [](std::future<void> &f) {
+                             return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+                           }),
+            analysis_tasks.end());
+
+        if (analysis_tasks.size() >= num_workers && !analysis_tasks.empty()) {
+          analysis_tasks.front().wait();
+          analysis_tasks.erase(analysis_tasks.begin());
         }
       }
 
-      // Queue next asset
-      const std::string &asset_code = stock_iter->first;
-      const JsonConfig::StockInfo &stock_info = stock_iter->second;
+      const AssetTask &asset = asset_queue_for_analysis[asset_idx];
 
-      const unsigned int core_id = tasks.size() % num_threads;
-      tasks.push_back(
-        std::async(std::launch::async, ProcessAsset, asset_code, stock_info, app_config, 
-                   paths.l2_archive_base, paths.TEMP_DIR, core_id, 
-                   progress_tracker->acquire_slot(asset_code + " (" + stock_info.name + ")"))
-      );
-      ++stock_iter;
+      analysis_tasks.push_back(
+          std::async(std::launch::async, process_analysis_for_asset, asset.asset_code, asset.dates, temp_dir, analysis_progress->acquire_slot(asset.asset_code + " (" + asset.asset_name + ")")));
+
+      ++asset_idx;
     }
 
-    // Wait for all remaining tasks
-    for (auto &task : tasks) {
+    for (auto &task : analysis_tasks) {
       task.wait();
     }
+    analysis_progress->stop();
 
-    progress_tracker->stop();
-  }
-};
-
-// ============================================================================
-// MAIN PROCESSING FUNCTIONS
-// ============================================================================
-
-// Per-asset processing (thread entry point)
-void ProcessAsset(const std::string &asset_code, const JsonConfig::StockInfo &stock_info, const JsonConfig::AppConfig &app_config, const std::string &l2_archive_base, const std::string &TEMP_DIR, unsigned int core_id, misc::ProgressHandle progress_handle) {
-  static thread_local bool affinity_set = false;
-  if (!affinity_set && misc::Affinity::supported()) {
-    affinity_set = misc::Affinity::pin_to_core(core_id);
-  }
-
-  L2::BinaryEncoder_L2 encoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
-  L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
-  L2::ExchangeType exchange_type = L2::infer_exchange_type(asset_code);
-  LimitOrderBook HFA_(L2::DEFAULT_ENCODER_ORDER_SIZE, exchange_type);
-
-  // Calculate effective date range
-  std::chrono::year_month_day stock_start_ymd{stock_info.start_date / std::chrono::day{1}};
-  std::chrono::year_month_day stock_end_ymd{stock_info.end_date / std::chrono::last};
-  std::chrono::year_month_day effective_start = (stock_start_ymd > app_config.start_date) ? stock_start_ymd : app_config.start_date;
-  std::chrono::year_month_day effective_end = (stock_end_ymd < app_config.end_date) ? stock_end_ymd : app_config.end_date;
-
-  const std::string start_formatted = JsonConfig::FormatYearMonthDay(effective_start);
-  const std::string end_formatted = JsonConfig::FormatYearMonthDay(effective_end);
-  const std::vector<std::string> dates = DateRangeGenerator::generate_date_range(start_formatted, end_formatted, l2_archive_base);
-
-  // Process each trading day
-  for (size_t i = 0; i < dates.size(); ++i) {
-    const std::string &date_str = dates[i];
-    
-    // Simply update progress handle - no coupling with progress system
-    progress_handle.update(i + 1, dates.size(), date_str);
-
-    if (AssetProcessor::process_single_day(asset_code, date_str, TEMP_DIR, l2_archive_base, encoder, decoder, HFA_)) {
-      if (Config::CLEANUP_AFTER_PROCESSING) {
-        FileManager::cleanup_temp_files(PathUtils::generate_temp_asset_dir(TEMP_DIR, date_str, asset_code));
-      }
-    }
-  }
-}
-
-// Program entry point
-int main() {
-  try {
-    const AppConfiguration::Paths paths = AppConfiguration::get_default_paths();
-
-    std::cout << "=== L2 Data Processor (CSV Mode) ===" << "\n";
-
-    const JsonConfig::AppConfig app_config = JsonConfig::ParseAppConfig(paths.config_file);
-    auto stock_info_map = JsonConfig::ParseStockInfo(paths.stock_info_file);
-    AppConfiguration::adjust_stock_dates(stock_info_map, app_config);
-    AppConfiguration::print_summary(paths, app_config, stock_info_map.size());
-
-    std::filesystem::create_directories(paths.TEMP_DIR);
-    Logger::init(paths.TEMP_DIR);
-    ParallelProcessor::run(stock_info_map, app_config, paths);
+    std::cout << "\n";
 
     Logger::close();
 
     if (Config::CLEANUP_AFTER_PROCESSING) {
-      if (std::filesystem::exists(paths.TEMP_DIR)) {
-        std::filesystem::remove_all(paths.TEMP_DIR);
+      if (std::filesystem::exists(temp_dir)) {
+        std::filesystem::remove_all(temp_dir);
       }
     }
 
