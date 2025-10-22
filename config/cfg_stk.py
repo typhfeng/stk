@@ -13,7 +13,7 @@ class cfg_stk:  # Constants Configs
     wt_session = 'SD0930'
 
     # main functions:
-    profile = True  # Enable profiling (Python: viztracer, C++: gperftools) -> output/profile/
+    profile = False  # Enable gperftools CPU profiler (sampling mode, function-level statistics)
     plot = False
 
     exchg = ['SSE', 'SZSE', 'BJSE']

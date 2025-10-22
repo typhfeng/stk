@@ -12,14 +12,25 @@
 #include <memory_resource>
 #include <sstream>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "codec/L2_DataType.hpp"
 #include "define/MemPool.hpp"
 // #include "features/backend/FeaturesConfig.hpp"
 #include "math/sample/ResampleRunBar.hpp"
-#include "package/tracy/tracy/Tracy.hpp"
+
+//========================================================================================
+// PROFILING CONTROL MACROS
+//========================================================================================
+
+// Control inlining based on PROFILE_MODE (set by CMake)
+#ifdef PROFILE_MODE
+#define HOT_INLINE [[gnu::noinline]]   // Disable inlining for profiler visibility
+#define HOT_NOINLINE [[gnu::noinline]] // Keep function boundary visible
+#else
+#define HOT_INLINE [[gnu::hot, gnu::always_inline]] inline // Aggressive inlining
+#define HOT_NOINLINE [[gnu::hot]]                          // Hot but not inlined
+#endif
 
 //========================================================================================
 // CONFIGURATION PARAMETERS
@@ -27,13 +38,27 @@
 
 // Debug switches
 #define DEBUG_ORDER_PRINT 0         // Print every order processing
+#define DEBUG_ORDER_FLAGS_CREATE 0  // Print when order with special flags is created
+#define DEBUG_ORDER_FLAGS_RESOLVE 0 // Print when order with special flags is resolved/migrated
 #define DEBUG_BOOK_PRINT 0          // Print order book snapshot
 #define DEBUG_BOOK_BY_SECOND 1      // 0: by tick, 1: every 1 second, 2: every 2 seconds, ...
 #define DEBUG_BOOK_AS_AMOUNT 1      // 0: 手, 1: 1万元, 2: 2万元, 3: 3万元, ...
 #define DEBUG_ANOMALY_PRINT 1       // Print max unmatched order with creation timestamp
-#define DEBUG_ORDER_FLAGS_CREATE 0  // Print when order with special flags is created
-#define DEBUG_ORDER_FLAGS_RESOLVE 0 // Print when order with special flags is resolved/migrated
 #define DEBUG_SINGLE_DAY 0          // Exit after processing one day
+
+// Auto-disable dependent switches based on logical relationships
+#if DEBUG_BOOK_PRINT == 0
+#undef DEBUG_BOOK_BY_SECOND
+#define DEBUG_BOOK_BY_SECOND 0
+#undef DEBUG_BOOK_AS_AMOUNT
+#define DEBUG_BOOK_AS_AMOUNT 0
+#undef DEBUG_ANOMALY_PRINT
+#define DEBUG_ANOMALY_PRINT 0
+#endif
+
+#if DEBUG_ANOMALY_PRINT
+#include <unordered_set>
+#endif
 
 // Trading session time points (China A-share market)
 namespace TradingSession {
@@ -169,11 +194,11 @@ constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to ch
 // 2. 检查order_lookup_[id]:
 //    ├─ 已存在 (OUT_OF_ORDER: TAKER/CANCEL先到)
 //    │  ├─ Order在Level[X], MAKER要求Level[Y], X≠Y?
-//    │  │  └─ move_order_between_levels(id, Y)
-//    │  └─ apply_volume_change(抵扣qty, 更新flags)
+//    │  │  └─ move_order_by_id(id, Y)
+//    │  └─ order_upsert(抵扣qty, 更新flags)
 //    │
 //    └─ 不存在 (正常情况)
-//       └─ apply_volume_change(创建新Order, 设置flags)
+//       └─ order_upsert(创建新Order, 设置flags)
 //
 // ┌─────────────────────────────────────────────────────────────────────────────────┐
 // │ TAKER FLOW (成交)                                                               │
@@ -198,14 +223,14 @@ constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to ch
 // 3. 通过order_lookup_查找target_id:
 //    ├─ 找到Order (正常情况)
 //    │  ├─ Order在Level[X], TAKER成交价=Y, X≠Y?
-//    │  │  ├─ move_order_between_levels(target_id, Y)
+//    │  │  ├─ move_order_by_id(target_id, Y)
 //    │  │  └─ 连续竞价 && 价格不匹配? → flags=ANOMALY_MATCH
 //    │  │
-//    │  ├─ apply_volume_change(抵扣qty)
+//    │  ├─ order_upsert(抵扣qty)
 //    │  └─ update_tob_after_trade(order, 是否完全消耗, 成交价)
 //    │
 //    └─ 未找到Order (OUT_OF_ORDER: TAKER先于MAKER到达)
-//       └─ apply_volume_change(预创建Order, flags=OUT_OF_ORDER)
+//       └─ order_upsert(预创建Order, flags=OUT_OF_ORDER)
 //
 // 4. 处理self_order (仅市价单场景: !both_ids_present):
 //    └─ 己方MAKER可能在Level[0] → 查找并迁移 → 抵扣
@@ -217,9 +242,9 @@ constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to ch
 // 1. 通过order_lookup_查找self_id:
 //    ├─ 找到Order
 //    │  ├─ Order在Level[0] && CANCEL有价格?
-//    │  │  └─ move_order_between_levels(id, cancel_price)
+//    │  │  └─ move_order_by_id(id, cancel_price)
 //    │  │
-//    │  └─ apply_volume_change(抵扣qty, CANCEL的signed_volume为负)
+//    │  └─ order_upsert(抵扣qty, CANCEL的signed_volume为负)
 //    │
 //    └─ 未找到Order (OUT_OF_ORDER或ZERO_PRICE)
 //       ├─ price=0? → Level[0], flags=ZERO_PRICE
@@ -344,13 +369,13 @@ struct alignas(CACHE_LINE_SIZE) Level {
   }
 
   // High-performance order management
-  [[gnu::hot]] void add(Order *order) {
+  HOT_INLINE void add(Order *order) {
     orders.push_back(order);
     ++order_count;
     net_quantity += order->qty;
   }
 
-  [[gnu::hot]] void remove(size_t order_index) {
+  HOT_INLINE void remove(size_t order_index) {
     assert(order_index < orders.size());
     Order *removed_order = orders[order_index];
 
@@ -366,8 +391,8 @@ struct alignas(CACHE_LINE_SIZE) Level {
   }
 
   // Fast level state queries
-  bool empty() const { return order_count == 0; }
-  bool has_visible_quantity() const { return net_quantity != 0; }
+  HOT_INLINE bool empty() const { return order_count == 0; }
+  HOT_INLINE bool has_visible_quantity() const { return net_quantity != 0; }
 
   // Recalculate cached total from scratch
   void refresh_total() {
@@ -388,7 +413,7 @@ struct Location {
 
 // Fast identity hash for OrderId (uint32_t) - avoids std::hash overhead
 struct OrderIdHash {
-  [[gnu::hot, gnu::always_inline]] inline size_t operator()(OrderId id) const noexcept {
+  HOT_INLINE size_t operator()(OrderId id) const noexcept {
     // Direct identity hash - OrderIds are already well-distributed
     return static_cast<size_t>(id);
   }
@@ -428,8 +453,7 @@ public:
   //======================================================================================
 
   // Process single order and update LOB state
-  [[gnu::hot]] bool process(const L2::Order &order) {
-    ZoneScoped;
+  HOT_NOINLINE bool process(const L2::Order &order) {
     curr_tick_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
     new_tick_ = curr_tick_ != prev_tick_;
 
@@ -445,11 +469,13 @@ public:
     }
     was_in_matching_period = in_matching_period_;
 
+#if DEBUG_BOOK_PRINT
     print_book(order);
+#endif
     prev_tick_ = curr_tick_;
 
     // Process resampling
-    if (resampler_.process(order)) {
+    if (resampler_.resample(order)) {
       // std::cout << "[RESAMPLE] Bar formed at " << format_time() << std::endl;
     }
 
@@ -458,8 +484,7 @@ public:
   };
 
   // Handle bilateral matching (both bid and ask deducted)
-  [[gnu::hot]] bool handle_bilateral_matching(const L2::Order &order) {
-    ZoneScoped;
+  HOT_NOINLINE bool handle_bilateral_matching(const L2::Order &order) {
     const Price trade_price = order.price;
     const Quantity volume = order.volume;
 
@@ -471,22 +496,25 @@ public:
     auto ask_it = order_lookup_.find(order.ask_order_id);
 
     bool maker_fully_consumed = false;
+    
+    // Get or create trade_price level once (shared by both sides)
+    Level *trade_level = level_find(trade_price);
 
     // Process bid order (apply -volume) - hot path assumes order exists
     if (bid_it != order_lookup_.end()) [[likely]] {
       if (bid_it->second.level->price != trade_price) [[unlikely]] {
-        move_order_between_levels_fast(bid_it, trade_price);
+        order_move_to_price(bid_it, trade_price);
       }
-      bool consumed = apply_volume_change(order.bid_order_id, trade_price, -volume, bid_it);
+      bool consumed = order_upsert(order.bid_order_id, trade_price, -volume, bid_it, OrderFlags::NORMAL, trade_level);
       maker_fully_consumed = !is_active_bid && consumed;
     }
 
     // Process ask order (apply +volume) - hot path assumes order exists
     if (ask_it != order_lookup_.end()) [[likely]] {
       if (ask_it->second.level->price != trade_price) [[unlikely]] {
-        move_order_between_levels_fast(ask_it, trade_price);
+        order_move_to_price(ask_it, trade_price);
       }
-      bool consumed = apply_volume_change(order.ask_order_id, trade_price, +volume, ask_it);
+      bool consumed = order_upsert(order.ask_order_id, trade_price, +volume, ask_it, OrderFlags::NORMAL, trade_level);
       if (is_active_bid)
         maker_fully_consumed = consumed;
     }
@@ -497,8 +525,7 @@ public:
     return true;
   }
 
-  [[gnu::hot, gnu::always_inline]] bool update_lob(const L2::Order &order) {
-    ZoneScoped;
+  HOT_NOINLINE bool update_lob(const L2::Order &order) {
     // Check for bilateral matching (SSE matching period or SZSE all day)
     const bool need_bilateral_matching = (exchange_type_ == ExchangeType::SZSE) ||
                                          (exchange_type_ == ExchangeType::SSE && in_matching_period_);
@@ -509,8 +536,8 @@ public:
     }
 
     // Extract operation parameters
-    delta_qty_ = get_delta_qty(order);
-    target_id_ = get_target_id(order);
+    delta_qty_ = order_get_delta_qty(order);
+    target_id_ = order_get_target_id(order);
     if (delta_qty_ == 0 || target_id_ == 0) [[unlikely]]
       return false;
 
@@ -526,11 +553,12 @@ public:
     // FAST PATH: TAKER/CANCEL with existing order
     //====================================================================================
     if ((order.order_type == L2::OrderType::TAKER || order.order_type == L2::OrderType::CANCEL) &&
-        found && !in_call_auction_) {
-      actual_price_ = it->second.level->price;
+        found && !in_call_auction_) [[likely]] {
+      Level *existing_level = it->second.level;
+      actual_price_ = existing_level->price;
 
-      if (actual_price_ == order.price) {
-        bool was_fully_consumed = apply_volume_change(target_id_, actual_price_, delta_qty_, it);
+      if (actual_price_ == order.price) [[likely]] {
+        bool was_fully_consumed = order_upsert(target_id_, actual_price_, delta_qty_, it, OrderFlags::NORMAL, existing_level);
         if (order.order_type == L2::OrderType::TAKER) {
           update_tob_after_trade(order, was_fully_consumed, actual_price_);
         }
@@ -544,7 +572,8 @@ public:
     //====================================================================================
     if (order.order_type == L2::OrderType::MAKER && !in_call_auction_ && order.price != 0 && !found) {
       actual_price_ = order.price;
-      apply_volume_change(target_id_, actual_price_, delta_qty_, it, OrderFlags::NORMAL);
+      // For MAKER, we may need to create level, so don't pass hint
+      order_upsert(target_id_, actual_price_, delta_qty_, it, OrderFlags::NORMAL);
       return true;
     }
 
@@ -555,13 +584,12 @@ public:
   };
 
   // Slow path: handle corner cases (out-of-order, call auction, special prices)
-  [[gnu::cold, gnu::noinline]] bool update_lob_deferred(
+  [[gnu::cold]] [[gnu::noinline]] bool update_lob_deferred(
       const L2::Order &order,
       std::pmr::unordered_map<OrderId, Location, OrderIdHash>::iterator it,
       bool found,
       bool in_call_auction,
       bool in_matching_period) {
-    ZoneScoped;
 
     //====================================================================================
     // MAKER ORDER
@@ -589,12 +617,12 @@ public:
         // OUT_OF_ORDER: order exists (created by earlier TAKER/CANCEL)
         Price existing_price = it->second.level->price;
         if (existing_price != placement_price) {
-          move_order_between_levels_fast(it, placement_price);
+          order_move_to_price(it, placement_price);
         }
-        apply_volume_change(target_id_, placement_price, delta_qty_, it, flags);
+        order_upsert(target_id_, placement_price, delta_qty_, it, flags);
       } else {
         // Create new order
-        apply_volume_change(target_id_, placement_price, delta_qty_, it, flags);
+        order_upsert(target_id_, placement_price, delta_qty_, it, flags);
       }
 
       return true;
@@ -618,7 +646,7 @@ public:
             anomaly_flag = OrderFlags::ANOMALY_MATCH;
           }
 
-          move_order_between_levels_fast(it, order.price);
+          order_move_to_price(it, order.price);
 
           if (anomaly_flag == OrderFlags::ANOMALY_MATCH) {
             Order *target_order = it->second.level->orders[it->second.index];
@@ -627,12 +655,12 @@ public:
         }
 
         actual_price_ = order.price;
-        bool was_fully_consumed = apply_volume_change(target_id_, actual_price_, delta_qty_, it);
+        bool was_fully_consumed = order_upsert(target_id_, actual_price_, delta_qty_, it);
         update_tob_after_trade(order, was_fully_consumed, actual_price_);
       } else {
         // OUT_OF_ORDER: create placeholder
         actual_price_ = order.price;
-        apply_volume_change(target_id_, actual_price_, delta_qty_, it, OrderFlags::OUT_OF_ORDER);
+        order_upsert(target_id_, actual_price_, delta_qty_, it, OrderFlags::OUT_OF_ORDER);
       }
 
       // Handle self order (market orders from Level[0])
@@ -646,11 +674,11 @@ public:
           if (self_order->flags == OrderFlags::SPECIAL_MAKER) {
             Price self_price = self_it->second.level->price;
             if (self_price != order.price) {
-              move_order_between_levels_fast(self_it, order.price);
+              order_move_to_price(self_it, order.price);
             }
           }
 
-          apply_volume_change(self_id, order.price, -delta_qty_, self_it);
+          order_upsert(self_id, order.price, -delta_qty_, self_it);
         }
       }
 
@@ -666,16 +694,16 @@ public:
 
         // Migrate from Level[0] if CANCEL has price
         if (self_price == 0 && order.price != 0) {
-          move_order_between_levels_fast(it, order.price);
+          order_move_to_price(it, order.price);
           self_price = order.price;
         }
 
-        apply_volume_change(target_id_, self_price, delta_qty_, it);
+        order_upsert(target_id_, self_price, delta_qty_, it);
       } else {
         // OUT_OF_ORDER or ZERO_PRICE: create placeholder
         Price placement_price = (order.price == 0) ? 0 : order.price;
         OrderFlags flags = (order.price == 0) ? OrderFlags::ZERO_PRICE : OrderFlags::OUT_OF_ORDER;
-        apply_volume_change(target_id_, placement_price, delta_qty_, it, flags);
+        order_upsert(target_id_, placement_price, delta_qty_, it, flags);
       }
 
       return true;
@@ -689,13 +717,13 @@ public:
   //======================================================================================
 
   // Get best bid (highest buy price)
-  [[gnu::hot]] Price best_bid() const {
+  HOT_NOINLINE Price best_bid() const {
     update_tob();
     return best_bid_;
   }
 
   // Get best ask (lowest sell price)
-  [[gnu::hot]] Price best_ask() const {
+  HOT_NOINLINE Price best_ask() const {
     update_tob();
     return best_ask_;
   }
@@ -704,7 +732,7 @@ public:
   size_t total_orders() const { return order_lookup_.size(); }
   size_t total_levels() const { return price_levels_.size(); }
   size_t total_level_zero_orders() const {
-    Level *level0 = find_level(0);
+    Level *level0 = level_find(0);
     return level0 ? level0->order_count : 0;
   }
 
@@ -714,7 +742,7 @@ public:
 
   // Process multiple orders in batch
   template <typename OrderRange>
-  [[gnu::hot]] size_t process_batch(const OrderRange &order_range) {
+  HOT_NOINLINE size_t process_batch(const OrderRange &order_range) {
     size_t count = 0;
     for (const auto &order : order_range) {
       if (process(order))
@@ -731,7 +759,7 @@ public:
   template <typename Func>
   void for_each_visible_bid(Func &&callback, size_t max_levels = 5) const {
     update_tob();
-    refresh_cache_if_dirty();
+    visibility_refresh_cache();
 
     if (best_bid_ == 0 || cached_visible_prices_.empty())
       return;
@@ -744,7 +772,7 @@ public:
     while (it != cached_visible_prices_.begin() && levels_processed < max_levels) {
       --it;
       Price price = *it;
-      Level *level = find_level(price);
+      Level *level = level_find(price);
       if (level && level->has_visible_quantity()) {
         callback(price, level->net_quantity);
         ++levels_processed;
@@ -756,7 +784,7 @@ public:
   template <typename Func>
   void for_each_visible_ask(Func &&callback, size_t max_levels = 5) const {
     update_tob();
-    refresh_cache_if_dirty();
+    visibility_refresh_cache();
 
     if (best_ask_ == 0 || cached_visible_prices_.empty())
       return;
@@ -768,7 +796,7 @@ public:
     // Iterate forward from best_ask position for ascending price order
     for (; it != cached_visible_prices_.end() && levels_processed < max_levels; ++it) {
       Price price = *it;
-      Level *level = find_level(price);
+      Level *level = level_find(price);
       if (level && level->has_visible_quantity()) {
         callback(price, level->net_quantity);
         ++levels_processed;
@@ -781,7 +809,7 @@ public:
   //======================================================================================
 
   // Complete reset
-  void clear() {
+  HOT_NOINLINE void clear() {
     price_levels_.clear();
     level_storage_.clear();
     order_lookup_.clear();
@@ -856,37 +884,50 @@ private:
   ResampleRunBar resampler_;
 
   //======================================================================================
-  // LEVEL MANAGEMENT
+  // LEVEL MANAGEMENT (Price Level Operations)
   //======================================================================================
-
-  // Find level by price (O(1) hash lookup)
-  [[gnu::hot, gnu::always_inline]] inline Level *find_level(Price price) const {
+  // Symmetric API for managing price levels in the order book
+  
+  // Query: Find existing level by price (returns nullptr if not found)
+  HOT_INLINE Level *level_find(Price price) const {
     auto it = price_levels_.find(price);
     return (it != price_levels_.end()) ? it->second : nullptr;
   }
+  
+  // Optimized: Get level or create atomically (single hash lookup)
+  HOT_INLINE Level *level_get_or_create(Price price) {
+    auto [it, inserted] = price_levels_.try_emplace(price, nullptr);
+    if (inserted) [[unlikely]] {
+      level_storage_.emplace_back(price);
+      it->second = &level_storage_.back();
+    }
+    return it->second;
+  }
 
-  // Create new level at price
-  [[gnu::hot, gnu::always_inline]] Level *create_level(Price price) {
+  // Create: Create new level (assumes level doesn't exist)
+  HOT_INLINE Level *level_create(Price price) {
     level_storage_.emplace_back(price);
     Level *level = &level_storage_.back();
     price_levels_[price] = level;
     return level;
   }
 
-  // Remove empty level
-  [[gnu::hot, gnu::always_inline]] void remove_level(Level *level, bool erase_visible = true) {
+  // Remove: Delete empty level from book
+  HOT_INLINE void level_remove(Level *level, bool update_visibility = true) {
     price_levels_.erase(level->price);
-    if (erase_visible) {
-      remove_visible_price(level->price);
+    if (update_visibility) {
+      visibility_mark_invisible_safe(level->price);
     }
   }
 
   //======================================================================================
-  // VISIBLE PRICE TRACKING
+  // VISIBILITY TRACKING (Price Visibility Operations)
   //======================================================================================
-
-  // Rebuild sorted price cache from bitmap (called lazily when dirty)
-  [[gnu::hot, gnu::always_inline]] inline void refresh_cache_if_dirty() const {
+  // Symmetric API for managing which prices are visible (non-zero quantity) in the book
+  // Uses bitmap for O(1) check and sorted cache for iteration
+  
+  // Cache: Rebuild sorted price cache from bitmap (called lazily when dirty)
+  HOT_INLINE void visibility_refresh_cache() const {
     if (!cache_dirty_)
       return;
 
@@ -900,33 +941,42 @@ private:
     cache_dirty_ = false;
   }
 
-  // Mark price as visible (O(1))
-  [[gnu::hot, gnu::always_inline]] inline void add_visible_price(Price price) {
+  // Mark: Set price as visible (unchecked, assumes not already visible)
+  HOT_INLINE void visibility_mark_visible(Price price) {
+    visible_price_bitmap_.set(price);
+    cache_dirty_ = true;
+  }
+
+  // Mark: Set price as invisible (unchecked, assumes currently visible)
+  HOT_INLINE void visibility_mark_invisible(Price price) {
+    visible_price_bitmap_.reset(price);
+    cache_dirty_ = true;
+  }
+  
+  // Safe: Set visibility with duplicate check
+  HOT_INLINE void visibility_mark_visible_safe(Price price) {
     if (!visible_price_bitmap_[price]) {
-      visible_price_bitmap_.set(price);
-      cache_dirty_ = true;
+      visibility_mark_visible(price);
     }
   }
 
-  // Mark price as invisible (O(1))
-  [[gnu::hot, gnu::always_inline]] inline void remove_visible_price(Price price) {
+  HOT_INLINE void visibility_mark_invisible_safe(Price price) {
     if (visible_price_bitmap_[price]) {
-      visible_price_bitmap_.reset(price);
-      cache_dirty_ = true;
+      visibility_mark_invisible(price);
     }
   }
 
-  // Update visibility after level quantity change
-  [[gnu::hot, gnu::always_inline]] inline void update_visible_price(Level *level) {
+  // Update: Sync visibility based on level's quantity state
+  HOT_INLINE void visibility_update_from_level(Level *level) {
     if (level->has_visible_quantity()) {
-      add_visible_price(level->price);
+      visibility_mark_visible_safe(level->price);
     } else {
-      remove_visible_price(level->price);
+      visibility_mark_invisible_safe(level->price);
     }
   }
 
   // Find next visible ask price above given price (ascending scan)
-  Price next_ask_above(Price from_price) const {
+  HOT_INLINE Price next_ask_above(Price from_price) const {
     for (uint32_t price_u32 = static_cast<uint32_t>(from_price) + 1; price_u32 < PRICE_RANGE_SIZE; ++price_u32) {
       Price price = static_cast<Price>(price_u32);
       if (visible_price_bitmap_[price]) {
@@ -937,7 +987,7 @@ private:
   }
 
   // Find next visible bid price below given price (descending scan)
-  Price next_bid_below(Price from_price) const {
+  HOT_INLINE Price next_bid_below(Price from_price) const {
     if (from_price == 0)
       return 0;
     for (Price price = from_price - 1; price != UINT16_MAX; --price) {
@@ -949,23 +999,25 @@ private:
   }
 
   // Get minimum visible price (from sorted cache)
-  Price min_visible_price() const {
-    refresh_cache_if_dirty();
+  HOT_INLINE Price min_visible_price() const {
+    visibility_refresh_cache();
     return cached_visible_prices_.empty() ? 0 : cached_visible_prices_.front();
   }
 
   // Get maximum visible price (from sorted cache)
-  Price max_visible_price() const {
-    refresh_cache_if_dirty();
+  HOT_INLINE Price max_visible_price() const {
+    visibility_refresh_cache();
     return cached_visible_prices_.empty() ? 0 : cached_visible_prices_.back();
   }
 
   //======================================================================================
-  // ORDER OPERATIONS
+  // ORDER OPERATIONS (Order Lifecycle Management)
   //======================================================================================
-
-  // Calculate signed quantity delta: +add to level, -deduct from level
-  [[gnu::hot, gnu::always_inline]] inline Quantity get_delta_qty(const L2::Order &order) const {
+  // Symmetric API for creating, modifying, and moving orders in the book
+  
+  // Helper: Calculate signed quantity delta for order type
+  // Returns: +qty (add to level), -qty (deduct from level)
+  HOT_INLINE Quantity order_get_delta_qty(const L2::Order &order) const {
     const bool is_bid = (order.order_dir == L2::OrderDirection::BID);
 
     switch (order.order_type) {
@@ -989,8 +1041,8 @@ private:
     }
   }
 
-  // Extract target order ID from order (the order to be modified)
-  [[gnu::hot, gnu::always_inline]] inline OrderId get_target_id(const L2::Order &order) const {
+  // Helper: Extract target order ID (the order to be modified)
+  HOT_INLINE OrderId order_get_target_id(const L2::Order &order) const {
     const bool is_bid = (order.order_dir == L2::OrderDirection::BID);
 
     switch (order.order_type) {
@@ -1009,93 +1061,117 @@ private:
     }
   }
 
-  // Apply quantity change to order: create new order or modify existing order
-  [[gnu::hot, gnu::always_inline]] bool apply_volume_change(
-      OrderId target_id,
+  // Core: Upsert order (update existing or insert new)
+  // This is the heart of the LOB reconstruction engine
+  //
+  // Parameters:
+  //   order_id        - Unique order identifier
+  //   price           - Price level for this order
+  //   quantity_delta  - Signed quantity change (+add, -deduct)
+  //   order_iter      - Iterator from order_lookup (from prior find operation)
+  //   flags           - Order state flags (NORMAL, OUT_OF_ORDER, etc.)
+  //   level_hint      - Optional pre-fetched level pointer (optimization)
+  //
+  // Returns: true if order was fully consumed (removed), false otherwise
+  //
+  // Optimization: Pass level_hint to avoid redundant hash lookups when caller
+  //               already knows the target level
+  HOT_NOINLINE bool order_upsert( // update and insert
+      OrderId order_id,
       Price price,
-      Quantity delta_qty,
-      decltype(order_lookup_.find(target_id)) it,
-      OrderFlags flags = OrderFlags::NORMAL) {
+      Quantity quantity_delta,
+      decltype(order_lookup_.find(order_id)) order_iter,
+      OrderFlags flags = OrderFlags::NORMAL,
+      Level *level_hint = nullptr) {
 
-    if (it != order_lookup_.end()) {
-      // Order exists - modify it
-      Level *target_level = it->second.level;
-      size_t order_index = it->second.index;
-      Order *target_order = target_level->orders[order_index];
+    if (order_iter != order_lookup_.end()) {
+      // ORDER EXISTS - Update existing order
+      Level *level = order_iter->second.level;
+      size_t order_index = order_iter->second.index;
+      Order *order = level->orders[order_index];
 
-      // Apply signed volume change
-      const Quantity old_qty = target_order->qty;
-      const Quantity new_qty = old_qty + delta_qty;
+      // Apply quantity delta
+      const Quantity old_qty = order->qty;
+      const Quantity new_qty = old_qty + quantity_delta;
 
       if (new_qty == 0) {
-        // Order fully consumed - print debug info before removal
+        // FULLY CONSUMED - Remove order completely
 #if DEBUG_ORDER_FLAGS_RESOLVE
-        if (target_order->flags != OrderFlags::NORMAL) {
-          print_order_flags_resolve(target_id, price, price, old_qty, 0, target_order->flags, OrderFlags::NORMAL, "CONSUME   ");
+        if (order->flags != OrderFlags::NORMAL) {
+          print_order_flags_resolve(order_id, price, price, old_qty, 0, order->flags, OrderFlags::NORMAL, "CONSUME   ");
         }
 #endif
 
-        // Order fully consumed - remove completely
-        target_level->remove(order_index);
-        order_lookup_.erase(it);
+        // Remove order from level
+        level->remove(order_index);
+        order_lookup_.erase(order_iter);
 
-        // Update lookup index for any moved order (swap-and-pop side effect)
-        if (order_index < target_level->orders.size()) {
-          auto moved_order_lookup = order_lookup_.find(target_level->orders[order_index]->id);
-          if (moved_order_lookup != order_lookup_.end()) {
-            moved_order_lookup->second.index = order_index;
+        // Fix up order_lookup_ index for moved order (swap-and-pop side effect)
+        if (order_index < level->orders.size()) {
+          auto moved_order_iter = order_lookup_.find(level->orders[order_index]->id);
+          if (moved_order_iter != order_lookup_.end()) {
+            moved_order_iter->second.index = order_index;
           }
         }
 
-        // Handle level cleanup and TOB updates
-        if (target_level->empty()) {
-          remove_level(target_level);
-        } else {
-          update_visible_price(target_level);
+        // Cleanup: Remove empty level or update visibility
+        const bool was_visible = level->has_visible_quantity();
+        if (level->empty()) {
+          level_remove(level, was_visible);
+        } else if (was_visible != level->has_visible_quantity()) {
+          visibility_update_from_level(level);
         }
 
         return true; // Fully consumed
       } else {
-        // Partial update
-        target_level->net_quantity += delta_qty;
-        target_order->qty = new_qty;
+        // PARTIALLY CONSUMED - Update order quantity
+        const bool was_visible = level->has_visible_quantity();
+        level->net_quantity += quantity_delta;
+        order->qty = new_qty;
 
-        // Update flags if provided
-        [[maybe_unused]] OrderFlags old_flags = target_order->flags;
-        if (flags != OrderFlags::NORMAL || target_order->flags != OrderFlags::NORMAL) {
+        // Update flags if needed
+        [[maybe_unused]] OrderFlags old_flags = order->flags;
+        if (flags != OrderFlags::NORMAL || order->flags != OrderFlags::NORMAL) {
 #if DEBUG_ORDER_FLAGS_RESOLVE
           if (old_flags != flags) {
-            print_order_flags_resolve(target_id, price, price, old_qty, new_qty, old_flags, flags, "UPDATE_FLG");
+            print_order_flags_resolve(order_id, price, price, old_qty, new_qty, old_flags, flags, "UPDATE_FLG");
           }
 #endif
-          target_order->flags = flags;
+          order->flags = flags;
         }
-        update_visible_price(target_level);
+        
+        // Update visibility only if it changed
+        if (was_visible != level->has_visible_quantity()) {
+          visibility_update_from_level(level);
+        }
         return false; // Partially consumed
       }
 
     } else {
-      // Order doesn't exist - create new order with flags
+      // ORDER DOESN'T EXIST - Create new order
 #if DEBUG_ANOMALY_PRINT
-      Order *new_order = order_memory_pool_.construct(delta_qty, target_id, curr_tick_, flags);
+      Order *new_order = order_memory_pool_.construct(quantity_delta, order_id, curr_tick_, flags);
 #else
-      Order *new_order = order_memory_pool_.construct(delta_qty, target_id, flags);
+      Order *new_order = order_memory_pool_.construct(quantity_delta, order_id, flags);
 #endif
       if (!new_order)
         return false;
 
-      Level *target_level = find_level(price);
-      if (!target_level) {
-        target_level = create_level(price);
+      // Get level: use hint if provided (optimization), otherwise get or create atomically
+      Level *level = level_hint ? level_hint : level_get_or_create(price);
+
+      // Add order to level and register in lookup table
+      size_t order_index = level->orders.size();
+      level->add(new_order);
+      order_lookup_.try_emplace(order_id, level, order_index);
+      
+      // Update visibility if level just became visible
+      if (quantity_delta != 0 && !visible_price_bitmap_[level->price]) {
+        visibility_mark_visible(level->price);
       }
 
-      size_t new_order_index = target_level->orders.size();
-      target_level->add(new_order);
-      order_lookup_.emplace(target_id, Location(target_level, new_order_index));
-      update_visible_price(target_level);
-
 #if DEBUG_ORDER_FLAGS_CREATE
-      print_order_flags_create(target_id, price, delta_qty, flags);
+      print_order_flags_create(order_id, price, quantity_delta, flags);
 #endif
 
       return false; // New order created
@@ -1103,14 +1179,17 @@ private:
   }
 
   //======================================================================================
-  // ORDER MIGRATION
+  // ORDER MIGRATION (Move orders between price levels)
   //======================================================================================
-
-  // Fast version: move order using existing iterator (avoids hash lookup)
-  [[gnu::hot, gnu::always_inline]] inline void move_order_between_levels_fast(
-      std::pmr::unordered_map<OrderId, Location, OrderIdHash>::iterator it, Price new_price) {
-    Level *old_level = it->second.level;
-    size_t old_index = it->second.index;
+  // Used for corner cases: price mismatch, special orders, etc.
+  
+  // Move: Relocate order from one price level to another (using iterator)
+  // Optimization: Accepts iterator to avoid redundant hash lookup
+  HOT_NOINLINE void order_move_to_price(
+      std::pmr::unordered_map<OrderId, Location, OrderIdHash>::iterator order_iter, 
+      Price new_price) {
+    Level *old_level = order_iter->second.level;
+    size_t old_index = order_iter->second.index;
     Price old_price = old_level->price;
 
     if (old_price == new_price)
@@ -1118,37 +1197,34 @@ private:
 
     Order *order = old_level->orders[old_index];
 
-    // Remove from old level (swap-and-pop)
+    // Step 1: Remove from old level (swap-and-pop)
     old_level->remove(old_index);
 
-    // Update index for swapped order (if any)
+    // Step 2: Fix up order_lookup_ for swapped order (swap-and-pop side effect)
     if (old_index < old_level->orders.size()) {
-      auto moved_order_it = order_lookup_.find(old_level->orders[old_index]->id);
-      if (moved_order_it != order_lookup_.end()) {
-        moved_order_it->second.index = old_index;
+      auto swapped_order_iter = order_lookup_.find(old_level->orders[old_index]->id);
+      if (swapped_order_iter != order_lookup_.end()) {
+        swapped_order_iter->second.index = old_index;
       }
     }
 
-    // Add to new level
-    Level *new_level = find_level(new_price);
-    if (!new_level) {
-      new_level = create_level(new_price);
-    }
+    // Step 3: Add to new level (get or create atomically)
+    Level *new_level = level_get_or_create(new_price);
 
     size_t new_index = new_level->orders.size();
     new_level->add(order);
 
-    // Update order_lookup_
-    it->second.level = new_level;
-    it->second.index = new_index;
+    // Step 4: Update order_lookup_ to point to new location
+    order_iter->second.level = new_level;
+    order_iter->second.index = new_index;
 
-    // Maintain visible price bitmap
-    update_visible_price(old_level);
-    update_visible_price(new_level);
+    // Step 5: Update visibility for both levels
+    visibility_update_from_level(old_level);
+    visibility_update_from_level(new_level);
 
-    // Cleanup empty level
+    // Step 6: Cleanup empty old level
     if (old_level->empty()) {
-      remove_level(old_level);
+      level_remove(old_level);
     }
 
 #if DEBUG_ORDER_FLAGS_RESOLVE
@@ -1156,13 +1232,13 @@ private:
 #endif
   }
 
-  // Move order from one level to another (slower: requires ID lookup)
-  void move_order_between_levels(OrderId order_id, Price new_price) {
-    auto it = order_lookup_.find(order_id);
-    if (it == order_lookup_.end())
+  // Move: Relocate order by ID (requires hash lookup, less efficient)
+  HOT_NOINLINE void order_move_by_id(OrderId order_id, Price new_price) {
+    auto order_iter = order_lookup_.find(order_id);
+    if (order_iter == order_lookup_.end())
       return; // Order not found
 
-    move_order_between_levels_fast(it, new_price);
+    order_move_to_price(order_iter, new_price);
   }
 
   //======================================================================================
@@ -1170,7 +1246,7 @@ private:
   //======================================================================================
 
   // Bootstrap TOB from visible prices (lazy initialization)
-  void update_tob() const {
+  HOT_INLINE void update_tob() const {
     if (!tob_dirty_)
       return;
 
@@ -1183,7 +1259,7 @@ private:
   }
 
   // Update one side of TOB after trade
-  [[gnu::hot, gnu::always_inline]] inline void update_tob_one_side(bool is_active_bid, bool was_fully_consumed, Price trade_price) {
+  HOT_INLINE void update_tob_one_side(bool is_active_bid, bool was_fully_consumed, Price trade_price) {
     if (was_fully_consumed) {
       // Level emptied - advance to next level
       if (is_active_bid) {
@@ -1203,7 +1279,7 @@ private:
   }
 
   // Update TOB after single-side trade (SSE continuous trading)
-  [[gnu::hot, gnu::always_inline]] inline void update_tob_after_trade(const L2::Order &order, bool was_fully_consumed, Price trade_price) {
+  HOT_INLINE void update_tob_after_trade(const L2::Order &order, bool was_fully_consumed, Price trade_price) {
     const bool is_active_bid = (order.order_dir == L2::OrderDirection::BID);
     update_tob_one_side(is_active_bid, was_fully_consumed, trade_price);
   }
@@ -1213,8 +1289,7 @@ private:
   //======================================================================================
 
   // Update session state flags based on current time (called when tick changes)
-  [[gnu::hot]] inline void update_trading_session_state() {
-    ZoneScoped;
+  HOT_NOINLINE void update_trading_session_state() {
     const uint16_t hhmm = ((curr_tick_ >> 16) & 0xFFFF); // hour * 256 + minute
 
     // Time boundaries
@@ -1235,8 +1310,7 @@ private:
   }
 
   // Clear CALL_AUCTION flags at 9:30:00 (orders stay at current levels)
-  void flush_call_auction_flags() {
-    ZoneScoped;
+  HOT_NOINLINE void flush_call_auction_flags() {
     for (auto &[price, level] : price_levels_) {
       for (Order *order : level->orders) {
         if (order->flags == OrderFlags::CALL_AUCTION) {
@@ -1459,9 +1533,8 @@ private:
 
   // Display current market depth
   void inline print_book([[maybe_unused]] const L2::Order &order) const {
-    ZoneScoped;
     // Don't print if there are no visible prices (covers pre-9:30 case naturally)
-    refresh_cache_if_dirty();
+    visibility_refresh_cache();
     if (cached_visible_prices_.empty())
       return;
 
@@ -1506,9 +1579,9 @@ private:
             minute == CONTINUOUS_TRADING_START_MINUTE &&
             second == 0) {
           debug_.printed_anomalies.clear();
-          refresh_cache_if_dirty();
+          visibility_refresh_cache();
           for (const Price price : cached_visible_prices_) {
-            Level *level = find_level(price);
+            Level *level = level_find(price);
             if (level && level->has_visible_quantity()) {
               check_anomaly(level);
             }
@@ -1594,13 +1667,13 @@ private:
 
       // Count anomalies: wrong sign on non-TOB levels
       size_t anomaly_count = 0;
-      refresh_cache_if_dirty();
+      visibility_refresh_cache();
       for (const Price price : cached_visible_prices_) {
         // Skip TOB area
         if (price >= best_bid_ && price <= best_ask_)
           continue;
 
-        const Level *level = find_level(price);
+        const Level *level = level_find(price);
         if (!level || !level->has_visible_quantity())
           continue;
 
@@ -1619,7 +1692,7 @@ private:
 #if DEBUG_ANOMALY_PRINT
       // Check anomalies for ALL visible levels (proactive detection)
       for (const Price price : cached_visible_prices_) {
-        Level *level = find_level(price);
+        Level *level = level_find(price);
         if (level && level->has_visible_quantity()) {
           check_anomaly(level);
         }
@@ -1630,7 +1703,7 @@ private:
     char order_type_char = (order.order_type == L2::OrderType::MAKER) ? 'M' : (order.order_type == L2::OrderType::CANCEL) ? 'C'
                                                                                                                           : 'T';
     char order_dir_char = (order.order_dir == L2::OrderDirection::BID) ? 'B' : 'S';
-    std::cout << "[" << format_time() << "] " << " ID: " << get_target_id(order) << " Type: " << order_type_char << " Direction: " << order_dir_char << " Price: " << order.price << " Volume: " << order.volume << std::endl;
+    std::cout << "[" << format_time() << "] " << " ID: " << order_get_target_id(order) << " Type: " << order_type_char << " Direction: " << order_dir_char << " Price: " << order.price << " Volume: " << order.volume << std::endl;
 #endif
   }
 };

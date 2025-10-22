@@ -17,7 +17,7 @@ public:
     daily_volumes.reserve(expected_num_daily_samples);
   }
 
-  [[gnu::hot, gnu::always_inline]] inline bool process(const L2::Order &order) {
+  [[gnu::hot, gnu::always_inline]] inline bool resample(const L2::Order &order) {
     // Fast early exit for non-taker orders
     if (order.order_type != L2::OrderType::TAKER)
       return false;

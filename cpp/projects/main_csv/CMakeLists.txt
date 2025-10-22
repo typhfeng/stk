@@ -12,12 +12,25 @@ option(PROFILE_MODE "Build with profiling-friendly flags (no LTO, less inlining)
 
 # Compiler-specific options
 if(PROFILE_MODE)
-    # Tracy profiling: Moderate optimization, retain visibility
-    message(STATUS "PROFILE_MODE: Tracy profiling enabled with -O2")
-    set(CMAKE_CXX_FLAGS "-O2 -g -Wall -Wextra -march=native -fno-omit-frame-pointer")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DTRACY_ENABLE -DTRACY_TIMER_FALLBACK")
-    # No LTO - keep function boundaries visible in Tracy
-    # No -fno-inline needed - Tracy instruments at function level
+    message(STATUS "PROFILE_MODE: profiling with all inlining and function optimizations disabled")
+    set(CMAKE_CXX_FLAGS "-Og -g -Wall -Wextra -march=native -fno-omit-frame-pointer")
+    add_compile_definitions(PROFILE_MODE)  # Enable PROFILE_MODE macro in source code
+    # Disable all forms of inlining
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline")                          # No inline at all
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline-functions")                # No automatic inlining
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline-small-functions")          # No small function inlining
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline-functions-called-once")    # No single-call inlining
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-early-inlining")                  # No early inlining phase
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-default-inline")                  # No C++ default inline (class methods)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-partial-inlining")                # No partial inlining
+    # Disable interprocedural optimizations
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-ipa-cp")                          # No constant propagation
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-ipa-cp-clone")                    # No cloning for constants
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-ipa-sra")                         # No scalar replacement
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-ipa-icf")                         # No identical code folding
+    # Disable call optimizations
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-optimize-sibling-calls")          # No tail call optimization
+    # No LTO - keep all function boundaries visible for sampling
 else()
     # Production: Maximum performance
     message(STATUS "Production build: -O3 with LTO")
@@ -52,7 +65,6 @@ set(SOURCES
     ../../src/codec/binary_encoder_L2.cpp
     ../../src/misc/logging.cpp
     ../../src/main_csv.cpp
-    ../../include/package/tracy/TracyClient.cpp  # Tracy implementation
 )
 
 # code specific settings ==========================================================================
@@ -92,8 +104,10 @@ target_include_directories(app_main_csv PRIVATE
 # Link Zstandard library
 target_link_libraries(app_main_csv PRIVATE ${ZSTD_LIB_PATH})
 
-# Link system libraries required by Tracy
-target_link_libraries(app_main_csv PRIVATE dl pthread)
+# Link gperftools profiler in PROFILE_MODE
+if(PROFILE_MODE)
+    target_link_libraries(app_main_csv PRIVATE profiler)
+endif()
 
 # Installation
 install(TARGETS app_main_csv RUNTIME DESTINATION bin)
