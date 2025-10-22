@@ -144,9 +144,7 @@ constexpr bool SKIP_EXISTING_BINARIES = true;    // Skip extraction/encoding if 
 
 namespace Utils {
 inline std::string generate_archive_path(const std::string &base_dir, const std::string &date_str) {
-  const std::string year = date_str.substr(0, 4);
-  const std::string year_month = date_str.substr(0, 6);
-  return base_dir + "/" + year + "/" + year_month + "/" + date_str + Config::ARCHIVE_EXTENSION;
+  return base_dir + "/" + date_str.substr(0, 4) + "/" + date_str.substr(0, 6) + "/" + date_str + Config::ARCHIVE_EXTENSION;
 }
 
 inline std::string generate_temp_asset_dir(const std::string &temp_dir, const std::string &date_str, const std::string &asset_code) {
@@ -216,21 +214,12 @@ inline std::vector<std::string> generate_date_range(const std::string &start_dat
 // Manages per-archive locks to prevent concurrent extraction from same RAR
 
 class RarLockManager {
-private:
-  static std::unordered_map<std::string, std::unique_ptr<std::mutex>> &get_locks() {
-    static std::unordered_map<std::string, std::unique_ptr<std::mutex>> locks;
-    return locks;
-  }
-
-  static std::mutex &get_map_mutex() {
-    static std::mutex mutex;
-    return mutex;
-  }
+  inline static std::mutex map_mutex;
+  inline static std::unordered_map<std::string, std::unique_ptr<std::mutex>> locks;
 
 public:
   static std::mutex *get_or_create_lock(const std::string &archive_path) {
-    std::lock_guard<std::mutex> lock(get_map_mutex());
-    auto &locks = get_locks();
+    std::lock_guard<std::mutex> lock(map_mutex);
     if (locks.find(archive_path) == locks.end()) {
       locks[archive_path] = std::make_unique<std::mutex>();
     }
@@ -245,7 +234,7 @@ public:
 struct AssetTask {
   std::string asset_code;
   std::string asset_name;
-  std::vector<std::string> dates; // all dates for this asset
+  std::vector<std::string> dates;
 };
 
 struct BinaryFiles {
@@ -393,8 +382,7 @@ void encoding_worker(std::vector<AssetTask> &asset_queue, std::mutex &queue_mute
     }
 
     // Set label to this asset (fixed for this asset's lifetime)
-    const std::string label = asset_task.asset_code + " (" + asset_task.asset_name + ")";
-    progress_handle.set_label(label);
+    progress_handle.set_label(asset_task.asset_code + " (" + asset_task.asset_name + ")");
 
     // Shuffle dates for this asset to spread RAR access
     std::vector<std::string> dates = asset_task.dates;
@@ -514,14 +502,10 @@ int main() {
     std::vector<AssetTask> asset_queue;
 
     for (const auto &[asset_code, stock_info] : stock_info_map) {
-      std::chrono::year_month_day stock_start_ymd{stock_info.start_date / std::chrono::day{1}};
-      std::chrono::year_month_day stock_end_ymd{stock_info.end_date / std::chrono::last};
-      std::chrono::year_month_day effective_start = (stock_start_ymd > app_config.start_date) ? stock_start_ymd : app_config.start_date;
-      std::chrono::year_month_day effective_end = (stock_end_ymd < app_config.end_date) ? stock_end_ymd : app_config.end_date;
+      const auto effective_start = std::max(std::chrono::year_month_day{stock_info.start_date / std::chrono::day{1}}, app_config.start_date);
+      const auto effective_end = std::min(std::chrono::year_month_day{stock_info.end_date / std::chrono::last}, app_config.end_date);
 
-      const std::string start_formatted = JsonConfig::FormatYearMonthDay(effective_start);
-      const std::string end_formatted = JsonConfig::FormatYearMonthDay(effective_end);
-      const std::vector<std::string> dates = Utils::generate_date_range(start_formatted, end_formatted, l2_archive_base);
+      const auto dates = Utils::generate_date_range(JsonConfig::FormatYearMonthDay(effective_start), JsonConfig::FormatYearMonthDay(effective_end), l2_archive_base);
 
       if (!dates.empty()) {
         asset_queue.push_back({asset_code, stock_info.name, dates});
@@ -557,29 +541,21 @@ int main() {
     auto analysis_progress = std::make_shared<misc::ParallelProgress>(num_workers);
     std::vector<std::future<void>> analysis_tasks;
 
-    size_t asset_idx = 0;
-    while (asset_idx < asset_queue_for_analysis.size()) {
-      // Wait for slot if at capacity
-      if (analysis_tasks.size() >= num_workers) {
+    for (const auto &asset : asset_queue_for_analysis) {
+      // Wait for available slot
+      while (analysis_tasks.size() >= num_workers) {
         analysis_tasks.erase(
             std::remove_if(analysis_tasks.begin(), analysis_tasks.end(),
-                           [](std::future<void> &f) {
-                             return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
-                           }),
+                           [](std::future<void> &f) { return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }),
             analysis_tasks.end());
-
-        if (analysis_tasks.size() >= num_workers && !analysis_tasks.empty()) {
+        if (analysis_tasks.size() >= num_workers) {
           analysis_tasks.front().wait();
           analysis_tasks.erase(analysis_tasks.begin());
         }
       }
 
-      const AssetTask &asset = asset_queue_for_analysis[asset_idx];
-
       analysis_tasks.push_back(
           std::async(std::launch::async, process_analysis_for_asset, asset.asset_code, asset.dates, temp_dir, analysis_progress->acquire_slot(asset.asset_code + " (" + asset.asset_name + ")")));
-
-      ++asset_idx;
     }
 
     for (auto &task : analysis_tasks) {
