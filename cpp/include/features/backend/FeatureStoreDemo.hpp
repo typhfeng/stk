@@ -177,26 +177,25 @@ inline void level2_updater(EventDrivenFeatureStore &store, size_t parent_idx) {
 
 // auto &store = get_feature_store();
 // // NOTE: All levels auto-initialized in constructor - no manual init needed!
-// 
+//
 // // 1. Set user-defined trigger and update functions
 // store.set_updater(L0_INDEX, level0_updater);
-// 
+//
 // store.set_trigger(L1_INDEX, level1_trigger);
 // store.set_updater(L1_INDEX, level1_updater);
-// 
+//
 // store.set_trigger(L2_INDEX, level2_trigger);
 // store.set_updater(L2_INDEX, level2_updater);
-// 
+//
 // // 2. Event-driven processing (runs billions of times)
 // // MACRO-GENERATED on_event() automatically scales to all levels
 // for (int i = 0; i < 1000000; ++i) {
 //   store.on_event(); // Fully inline optimized - zero overhead scaling
 // }
-// 
+//
 // // 3. Export complete feature matrix for ML training
 // // MACRO-GENERATED tensor export automatically includes all levels
 // auto tensor = store.to_expanded_tensor();
-// 
+//
 // // 4. Cleanup when done
 // EventDrivenFeatureStore::free_expanded_tensor(tensor);
-

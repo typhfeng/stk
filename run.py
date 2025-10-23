@@ -33,17 +33,17 @@ def _cleanup_background_processes():
         f"pprof.*{PPROF_PORT}",      # Old pprof web servers
         f"app_{APP_NAME}",            # Old app instances
     ]
-    
+
     for pattern in processes_to_kill:
-        subprocess.run(["pkill", "-9", "-f", pattern], 
-                      capture_output=True, check=False)
-    
+        subprocess.run(["pkill", "-9", "-f", pattern],
+                       capture_output=True, check=False)
+
     time.sleep(0.3)
 
 
 def _cleanup_old_profiler():
     """Kill old pprof web server."""
-    subprocess.run(["pkill", "-f", f"pprof.*{PPROF_PORT}"], 
+    subprocess.run(["pkill", "-f", f"pprof.*{PPROF_PORT}"],
                    check=False, capture_output=True)
     time.sleep(0.2)
 
@@ -101,7 +101,7 @@ def run_with_profiling(binary_path, working_dir):
         os.remove(profile_file)
 
     print(f"Running with gperftools profiler ({CPUPROFILE_FREQUENCY} Hz)...")
-    
+
     env = os.environ.copy()
     env['CPUPROFILE'] = profile_file
     env['CPUPROFILE_FREQUENCY'] = str(CPUPROFILE_FREQUENCY)
@@ -123,16 +123,16 @@ def run_with_profiling(binary_path, working_dir):
 def build_project(app_name, enable_profile_mode):
     """Trigger build via py/{app_name}.py -> build.sh."""
     py_script = f"./py/{app_name}.py"
-    
+
     if not os.path.exists(py_script):
         print(f"Error: Build script not found: {py_script}")
         sys.exit(1)
-    
+
     env = os.environ.copy()
     env['PROFILE_MODE'] = 'ON' if enable_profile_mode else 'OFF'
-    
+
     result = subprocess.run(["python3", py_script], env=env, check=False)
-    
+
     if result.returncode != 0:
         print(f"\nBuild failed with exit code {result.returncode}")
         sys.exit(1)
@@ -157,14 +157,14 @@ def main():
     # Change to script directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
-    
+
     # Cleanup background processes first
     print("Cleaning up background processes...")
     _cleanup_background_processes()
-    
+
     # Build project
     build_project(APP_NAME, ENABLE_PROFILE)
-    
+
     # Run binary from build directory (binary expects to run from build/ for relative paths)
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")
     binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}")

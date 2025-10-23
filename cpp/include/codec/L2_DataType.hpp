@@ -28,7 +28,7 @@ inline const char *OUTPUT_DIR = "../../../output/database/L2_binary";
 inline const char *TEMP_DIR = "../../../output/database";
 
 inline constexpr size_t DEFAULT_ENCODER_SNAPSHOT_SIZE = 5000; // 3秒全量快照 4*3600/3=4800
-inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000;   // 逐笔合并(增删改成交)
+inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000;  // 逐笔合并(增删改成交)
 
 // Data Struct
 inline constexpr int BLEN = 100;            // default length for Cbuffers (feature computation)
@@ -157,28 +157,28 @@ enum class ExchangeType : uint8_t {
 
 // Shanghai Stock Exchange (上交所)
 inline bool is_sse_asset(const std::string &prefix) {
-  return prefix == "600" ||  // 沪市主板
-         prefix == "601" ||  // 沪市主板
-         prefix == "603" ||  // 沪市主板
-         prefix == "605" ||  // 沪市主板
-         prefix == "688" ||  // 科创板
-         prefix == "689" ||  // 科创板存托凭证
-         prefix == "900";    // 沪市B股
+  return prefix == "600" || // 沪市主板
+         prefix == "601" || // 沪市主板
+         prefix == "603" || // 沪市主板
+         prefix == "605" || // 沪市主板
+         prefix == "688" || // 科创板
+         prefix == "689" || // 科创板存托凭证
+         prefix == "900";   // 沪市B股
 }
 
 // Shenzhen Stock Exchange (深交所)
 inline bool is_szse_asset(const std::string &prefix) {
-  return prefix == "000" ||  // 深市主板
-         prefix == "001" ||  // 深市主板
-         prefix == "002" ||  // 深市中小板
-         prefix == "003" ||  // 深市中小板
-         prefix == "004" ||  // 深市中小板
-         prefix == "300" ||  // 创业板
-         prefix == "301" ||  // 创业板
-         prefix == "302" ||  // 创业板
-         prefix == "309" ||  // 创业板存托凭证
-         prefix == "200" ||  // 深市B股
-         prefix == "201";    // 深市B股
+  return prefix == "000" || // 深市主板
+         prefix == "001" || // 深市主板
+         prefix == "002" || // 深市中小板
+         prefix == "003" || // 深市中小板
+         prefix == "004" || // 深市中小板
+         prefix == "300" || // 创业板
+         prefix == "301" || // 创业板
+         prefix == "302" || // 创业板
+         prefix == "309" || // 创业板存托凭证
+         prefix == "200" || // 深市B股
+         prefix == "201";   // 深市B股
 }
 
 // Beijing Stock Exchange (北交所)
@@ -186,24 +186,24 @@ inline bool is_bse_asset(const std::string &asset_code) {
   if (asset_code.length() < 2)
     return false;
   const std::string prefix_2 = asset_code.substr(0, 2);
-  return prefix_2 == "87" ||  // 北交所精选层
-         prefix_2 == "88" ||  // 北交所精选层
-         prefix_2 == "92";    // 北交所
+  return prefix_2 == "87" || // 北交所精选层
+         prefix_2 == "88" || // 北交所精选层
+         prefix_2 == "92";   // 北交所
 }
 
 // National Equities Exchange and Quotations (新三板)
 inline bool is_neeq_asset(const std::string &asset_code) {
   if (asset_code.length() < 2)
     return false;
-    
+
   const std::string prefix_3 = asset_code.length() >= 3 ? asset_code.substr(0, 3) : "";
   const std::string prefix_2 = asset_code.substr(0, 2);
-  
-  return prefix_3 == "400" ||  // 新三板基础层
-         prefix_3 == "420" ||  // 新三板基础层
-         prefix_3 == "430" ||  // 新三板基础层
-         prefix_2 == "82" ||   // 新三板创新层
-         prefix_2 == "83";     // 新三板创新层
+
+  return prefix_3 == "400" || // 新三板基础层
+         prefix_3 == "420" || // 新三板基础层
+         prefix_3 == "430" || // 新三板基础层
+         prefix_2 == "82" ||  // 新三板创新层
+         prefix_2 == "83";    // 新三板创新层
 }
 
 // Infer exchange type from asset code (for order book matching mechanism)
@@ -213,7 +213,7 @@ inline ExchangeType infer_exchange_type(const std::string &asset_code) {
     return ExchangeType::UNKNOWN;
 
   const std::string prefix_3 = asset_code.length() >= 3 ? asset_code.substr(0, 3) : "";
-  
+
   if (is_sse_asset(prefix_3))
     return ExchangeType::SSE;
   if (is_szse_asset(prefix_3))
@@ -222,7 +222,7 @@ inline ExchangeType infer_exchange_type(const std::string &asset_code) {
     return ExchangeType::BSE;
   if (is_neeq_asset(asset_code))
     return ExchangeType::NEEQ;
-    
+
   return ExchangeType::UNKNOWN;
 }
 
@@ -234,7 +234,7 @@ inline bool is_valid_market_asset(const std::string &asset_code) {
     return false;
 
   const std::string prefix_3 = asset_code.substr(0, 3);
-  
+
   // Special case: Test assets 600000-600020 and 300000-300020
   if (prefix_3 == "600" || prefix_3 == "300") {
     try {
@@ -247,10 +247,14 @@ inline bool is_valid_market_asset(const std::string &asset_code) {
   }
 
   // Exclude all actual market assets
-  if (is_sse_asset(prefix_3))    return false;  // 上交所
-  if (is_szse_asset(prefix_3))   return false;  // 深交所
-  if (is_bse_asset(asset_code))  return false;  // 北交所
-  if (is_neeq_asset(asset_code)) return false;  // 新三板
+  if (is_sse_asset(prefix_3))
+    return false; // 上交所
+  if (is_szse_asset(prefix_3))
+    return false; // 深交所
+  if (is_bse_asset(asset_code))
+    return false; // 北交所
+  if (is_neeq_asset(asset_code))
+    return false; // 新三板
 
   return false; // Not a valid market asset (likely an index or other instrument)
 }

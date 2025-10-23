@@ -505,7 +505,7 @@ public:
     auto ask_it = order_lookup_.find(order.ask_order_id);
 
     bool maker_fully_consumed = false;
-    
+
     // Get or create trade_price level once (shared by both sides)
     Level *trade_level = level_find(trade_price);
 
@@ -901,13 +901,13 @@ private:
   // LEVEL MANAGEMENT (Price Level Operations)
   //======================================================================================
   // Symmetric API for managing price levels in the order book
-  
+
   // Query: Find existing level by price (returns nullptr if not found)
   HOT_INLINE Level *level_find(Price price) const {
     auto it = price_levels_.find(price);
     return (it != price_levels_.end()) ? it->second : nullptr;
   }
-  
+
   // Optimized: Get level or create atomically (single hash lookup)
   HOT_INLINE Level *level_get_or_create(Price price) {
     auto [it, inserted] = price_levels_.try_emplace(price, nullptr);
@@ -939,7 +939,7 @@ private:
   //======================================================================================
   // Symmetric API for managing which prices are visible (non-zero quantity) in the book
   // Uses bitmap for O(1) check and sorted cache for iteration
-  
+
   // Cache: Rebuild sorted price cache from bitmap (called lazily when dirty)
   HOT_INLINE void visibility_refresh_cache() const {
     if (!cache_dirty_)
@@ -966,7 +966,7 @@ private:
     visible_price_bitmap_.reset(price);
     cache_dirty_ = true;
   }
-  
+
   // Safe: Set visibility with duplicate check
   HOT_INLINE void visibility_mark_visible_safe(Price price) {
     if (!visible_price_bitmap_[price]) {
@@ -1028,7 +1028,7 @@ private:
   // ORDER OPERATIONS (Order Lifecycle Management)
   //======================================================================================
   // Symmetric API for creating, modifying, and moving orders in the book
-  
+
   // Helper: Calculate signed quantity delta for order type
   // Returns: +qty (add to level), -qty (deduct from level)
   // NOTE: Uses cached is_maker_/is_taker_/is_cancel_ and is_bid_ from process()
@@ -1144,7 +1144,7 @@ private:
 #endif
           order->flags = flags;
         }
-        
+
         // Update visibility only if it changed
         if (was_visible != level->has_visible_quantity()) {
           visibility_update_from_level(level);
@@ -1169,7 +1169,7 @@ private:
       size_t order_index = level->orders.size();
       level->add(new_order);
       order_lookup_.try_emplace(order_id, level, order_index);
-      
+
       // Update visibility if level just became visible
       if (quantity_delta != 0 && !visible_price_bitmap_[level->price]) {
         visibility_mark_visible(level->price);
@@ -1187,11 +1187,11 @@ private:
   // ORDER MIGRATION (Move orders between price levels)
   //======================================================================================
   // Used for corner cases: price mismatch, special orders, etc.
-  
+
   // Move: Relocate order from one price level to another (using iterator)
   // Optimization: Accepts iterator to avoid redundant hash lookup
   HOT_NOINLINE void order_move_to_price(
-      std::pmr::unordered_map<OrderId, Location, OrderIdHash>::iterator order_iter, 
+      std::pmr::unordered_map<OrderId, Location, OrderIdHash>::iterator order_iter,
       Price new_price) {
     Level *old_level = order_iter->second.level;
     size_t old_index = order_iter->second.index;
