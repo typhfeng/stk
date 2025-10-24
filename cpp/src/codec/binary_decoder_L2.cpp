@@ -75,8 +75,8 @@ inline double BinaryDecoder_L2::vwap_to_rmb(uint16_t vwap_ticks) {
   return static_cast<double>(vwap_ticks) * 0.001; // Convert from 0.001 RMB units to RMB
 }
 
-inline uint32_t BinaryDecoder_L2::volume_to_shares(uint16_t volume_100shares) {
-  return static_cast<uint32_t>(volume_100shares) * 100;
+inline uint32_t BinaryDecoder_L2::get_volume(uint32_t volume_shares) {
+  return volume_shares; // Already in shares, no conversion needed
 }
 
 const char *BinaryDecoder_L2::order_type_to_string(uint8_t order_type) {
@@ -123,7 +123,7 @@ void BinaryDecoder_L2::print_snapshot(const Snapshot &snapshot, size_t index) {
   std::cout << "Close: " << std::fixed << std::setprecision(2) << price_to_rmb(snapshot.close) << " RMB" << std::endl;
   // std::cout << "High: " << price_to_rmb(snapshot.high) << " RMB" << std::endl;
   // std::cout << "Low: " << price_to_rmb(snapshot.low) << " RMB" << std::endl;
-  std::cout << "Volume: " << volume_to_shares(snapshot.volume) << " shares" << std::endl;
+  std::cout << "Volume: " << get_volume(snapshot.volume) << " shares" << std::endl;
   std::cout << "Turnover: " << snapshot.turnover << " fen" << std::endl;
   std::cout << "Trade Count (incremental): " << static_cast<int>(snapshot.trade_count) << std::endl;
 
@@ -145,8 +145,8 @@ void BinaryDecoder_L2::print_snapshot(const Snapshot &snapshot, size_t index) {
 
   std::cout << "VWAP - Bid: " << vwap_to_rmb(snapshot.all_bid_vwap)
             << ", Ask: " << vwap_to_rmb(snapshot.all_ask_vwap) << std::endl;
-  std::cout << "Total Volume - Bid: " << volume_to_shares(snapshot.all_bid_volume)
-            << ", Ask: " << volume_to_shares(snapshot.all_ask_volume) << std::endl;
+  std::cout << "Total Volume - Bid: " << get_volume(snapshot.all_bid_volume)
+            << ", Ask: " << get_volume(snapshot.all_ask_volume) << std::endl;
   std::cout << std::endl;
 }
 
@@ -156,7 +156,7 @@ void BinaryDecoder_L2::print_order(const Order &order, size_t index) {
   std::cout << "Type: " << order_type_to_string(order.order_type) << std::endl;
   std::cout << "Direction: " << order_dir_to_string(order.order_dir) << std::endl;
   std::cout << "Price: " << std::fixed << std::setprecision(2) << price_to_rmb(order.price) << " RMB" << std::endl;
-  std::cout << "Volume: " << volume_to_shares(order.volume) << " shares" << std::endl;
+  std::cout << "Volume: " << get_volume(order.volume) << " shares" << std::endl;
   std::cout << "Bid Order ID: " << order.bid_order_id << std::endl;
   std::cout << "Ask Order ID: " << order.ask_order_id << std::endl;
   std::cout << std::endl;

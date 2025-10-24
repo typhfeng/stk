@@ -189,9 +189,9 @@ inline uint32_t BinaryEncoder_L2::parse_vwap_price(std::string_view str) {
   return static_cast<uint32_t>(parse_numeric_field(str, 10));
 }
 
-// Parse volume fields (shares → 100-share units)
-inline uint32_t BinaryEncoder_L2::parse_volume_to_100shares(std::string_view str) {
-  return static_cast<uint32_t>(parse_numeric_field(str, 100));
+// Parse volume fields (shares → shares, no conversion)
+inline uint32_t BinaryEncoder_L2::parse_volume(std::string_view str) {
+  return static_cast<uint32_t>(parse_numeric_field(str, 1));
 }
 
 // Parse turnover fields (keep as-is, integer fen)
@@ -252,7 +252,7 @@ bool BinaryEncoder_L2::parse_snapshot_csv(const std::string &filepath,
       snap.date = fast_parse_u32(fields[2]);
       snap.time = fast_parse_u32(fields[3]);
       snap.price = parse_price_to_fen(fields[4]);
-      snap.volume = parse_volume_to_100shares(fields[5]);
+      snap.volume = parse_volume(fields[5]);
       snap.turnover = parse_turnover_to_fen(fields[6]);
 
       // Convert cumulative trade count to incremental
@@ -261,7 +261,7 @@ bool BinaryEncoder_L2::parse_snapshot_csv(const std::string &filepath,
       if (curr_trade_count >= prev_trade_count) {
         snap.trade_count = curr_trade_count - prev_trade_count;
       } else {
-        Logger::log_encoding("Trade count decreased at line " + std::to_string(line_number) + ": " + filepath);
+        Logger::log_encode("Trade count decreased at line " + std::to_string(line_number) + ": " + filepath);
         snap.trade_count = 0;
       }
       prev_trade_count = curr_trade_count;
@@ -269,19 +269,19 @@ bool BinaryEncoder_L2::parse_snapshot_csv(const std::string &filepath,
       // Parse 10-level orderbook
       for (int i = 0; i < 10; ++i) {
         snap.ask_prices[i] = parse_price_to_fen(fields[17 + i]);
-        snap.ask_volumes[i] = parse_volume_to_100shares(fields[27 + i]);
+        snap.ask_volumes[i] = parse_volume(fields[27 + i]);
         snap.bid_prices[i] = parse_price_to_fen(fields[37 + i]);
-        snap.bid_volumes[i] = parse_volume_to_100shares(fields[47 + i]);
+        snap.bid_volumes[i] = parse_volume(fields[47 + i]);
       }
 
       snap.weighted_avg_ask_price = parse_vwap_price(fields[57]);
       snap.weighted_avg_bid_price = parse_vwap_price(fields[58]);
-      snap.total_ask_volume = parse_volume_to_100shares(fields[59]);
-      snap.total_bid_volume = parse_volume_to_100shares(fields[60]);
+      snap.total_ask_volume = parse_volume(fields[59]);
+      snap.total_bid_volume = parse_volume(fields[60]);
 
       snapshots.push_back(snap);
     } catch (const std::exception &e) {
-      Logger::log_encoding("Error parsing snapshot: " + std::string(e.what()));
+      Logger::log_encode("Error parsing snapshot: " + std::string(e.what()));
       return;
     }
   };
@@ -289,7 +289,7 @@ bool BinaryEncoder_L2::parse_snapshot_csv(const std::string &filepath,
   // Auto-detect delimiter and parse
   char delimiter = detect_csv_delimiter(filepath);
   if (!parse_csv_with_delimiter(filepath, delimiter, parse_line)) {
-    Logger::log_encoding("Cannot parse snapshot CSV: " + filepath);
+    Logger::log_encode("Cannot parse snapshot CSV: " + filepath);
     return false;
   }
 
@@ -328,11 +328,11 @@ bool BinaryEncoder_L2::parse_order_csv(const std::string &filepath,
       }
 
       order.price = parse_price_to_fen(fields[8]);
-      order.volume = parse_volume_to_100shares(fields[9]);
+      order.volume = parse_volume(fields[9]);
 
       orders.push_back(order);
     } catch (const std::exception &e) {
-      Logger::log_encoding("Error parsing order: " + std::string(e.what()));
+      Logger::log_encode("Error parsing order: " + std::string(e.what()));
       return;
     }
   };
@@ -340,7 +340,7 @@ bool BinaryEncoder_L2::parse_order_csv(const std::string &filepath,
   // Auto-detect delimiter and parse
   char delimiter = detect_csv_delimiter(filepath);
   if (!parse_csv_with_delimiter(filepath, delimiter, parse_line)) {
-    Logger::log_encoding("Cannot parse order CSV: " + filepath);
+    Logger::log_encode("Cannot parse order CSV: " + filepath);
     return false;
   }
 
@@ -375,13 +375,13 @@ bool BinaryEncoder_L2::parse_trade_csv(const std::string &filepath,
       trade.dummy_code = ' '; // Unused
 
       trade.price = parse_price_to_fen(fields[8]);
-      trade.volume = parse_volume_to_100shares(fields[9]);
+      trade.volume = parse_volume(fields[9]);
       trade.ask_order_id = fast_parse_u64(fields[10]);
       trade.bid_order_id = fast_parse_u64(fields[11]);
 
       trades.push_back(trade);
     } catch (const std::exception &e) {
-      Logger::log_encoding("Error parsing trade: " + std::string(e.what()));
+      Logger::log_encode("Error parsing trade: " + std::string(e.what()));
       return;
     }
   };
@@ -389,7 +389,7 @@ bool BinaryEncoder_L2::parse_trade_csv(const std::string &filepath,
   // Auto-detect delimiter and parse
   char delimiter = detect_csv_delimiter(filepath);
   if (!parse_csv_with_delimiter(filepath, delimiter, parse_line)) {
-    Logger::log_encoding("Cannot parse trade CSV: " + filepath);
+    Logger::log_encode("Cannot parse trade CSV: " + filepath);
     return false;
   }
 
@@ -553,7 +553,7 @@ BinaryEncoder_L2::~BinaryEncoder_L2() {
 bool BinaryEncoder_L2::encode_snapshots(const std::vector<Snapshot> &snapshots, 
                                         const std::string &filepath) {
   if (snapshots.empty()) {
-    Logger::log_encoding("No snapshots to encode: " + filepath);
+    Logger::log_encode("No snapshots to encode: " + filepath);
     return true;
   }
 
@@ -574,7 +574,7 @@ bool BinaryEncoder_L2::encode_snapshots(const std::vector<Snapshot> &snapshots,
 bool BinaryEncoder_L2::encode_orders(const std::vector<Order> &orders, 
                                      const std::string &filepath) {
   if (orders.empty()) {
-    Logger::log_encoding("No orders to encode: " + filepath);
+    Logger::log_encode("No orders to encode: " + filepath);
     return false;
   }
 
@@ -601,7 +601,7 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
                                                const void *data, size_t data_size) {
   std::ofstream file(filepath, std::ios::binary);
   if (!file.is_open()) [[unlikely]] {
-    Logger::log_encoding("Cannot open file for writing: " + filepath);
+    Logger::log_encode("Cannot open file for writing: " + filepath);
     return false;
   }
 
@@ -613,7 +613,7 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
   );
 
   if (ZSTD_isError(compressed_size)) [[unlikely]] {
-    Logger::log_encoding("Compression failed: " + std::string(ZSTD_getErrorName(compressed_size)));
+    Logger::log_encode("Compression failed: " + std::string(ZSTD_getErrorName(compressed_size)));
     return false;
   }
 
@@ -621,13 +621,13 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
   file.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
   file.write(reinterpret_cast<const char*>(&compressed_size), sizeof(compressed_size));
   if (file.fail()) [[unlikely]] {
-    Logger::log_encoding("Failed to write header: " + filepath);
+    Logger::log_encode("Failed to write header: " + filepath);
     return false;
   }
 
   file.write(compressed.get(), compressed_size);
   if (file.fail()) [[unlikely]] {
-    Logger::log_encoding("Failed to write data: " + filepath);
+    Logger::log_encode("Failed to write data: " + filepath);
     return false;
   }
 
@@ -682,7 +682,7 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
     // Validate snapshot count
     constexpr size_t MIN_EXPECTED_COUNT = 1000;
     if (snapshots.size() < MIN_EXPECTED_COUNT) {
-      Logger::log_encoding("Abnormal snapshot count: " + stock_code + " " + stock_dir +
+      Logger::log_encode("Abnormal snapshot count: " + stock_code + " " + stock_dir +
                                 " has only " + std::to_string(snapshots.size()) + " snapshots");
       std::exit(1);
     }
@@ -723,7 +723,7 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
     // Validate order count
     constexpr size_t MIN_EXPECTED_COUNT = 1000;
     if (all_orders.size() < MIN_EXPECTED_COUNT) {
-      Logger::log_encoding("Abnormal order count: " + stock_code + " " + stock_dir +
+      Logger::log_encode("Abnormal order count: " + stock_code + " " + stock_dir +
                                 " has only " + std::to_string(all_orders.size()) + " orders");
       std::exit(1);
     }

@@ -6,11 +6,11 @@
         "ipo_date": "1999-11-10",
         "delist_date": ""
     },
-    "300001.SZ": {
-        "name": "特锐德",
-        "industry": "电力设备",
-        "sub_industry": "电网设备",
-        "ipo_date": "2009-10-30",
+    "000001.SZ": {
+        "name": "平安银行",
+        "industry": "银行",
+        "sub_industry": "股份制银行",
+        "ipo_date": "1991-04-03",
         "delist_date": ""
     }
 }

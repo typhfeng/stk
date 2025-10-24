@@ -39,7 +39,7 @@ inline constexpr int TRADE_HRS_PER_DAY = 4; // 单日交易时间
 inline constexpr size_t LOB_FEATURE_DEPTH_LEVELS = 20; // Number of depth levels to maintain (top N levels)
 
 // Resample
-inline constexpr int RESAMPLE_INIT_VOLUME_THD = 100; // initial volume threshold (n*100shares*100rmb = n*10,000rmb)
+inline constexpr int RESAMPLE_INIT_VOLUME_THD = 10000; // initial volume threshold (n*shares*100rmb/100 = n*100rmb)
 inline constexpr int RESAMPLE_TRADE_HRS_PER_DAY = 4; // number of trading hours in a day
 inline constexpr int RESAMPLE_MIN_PERIOD = 1;        // minimal sample period (in seconds)
 inline constexpr int RESAMPLE_TARGET_PERIOD = 30;    // target sample period (in seconds) (more dense sample in the morning)
@@ -65,18 +65,18 @@ struct Snapshot {
   uint8_t minute;               // 6bit
   uint8_t second;               // 6bit
   uint8_t trade_count;          // 8bit
-  uint16_t volume;              // 16bit - units of 100 shares
+  uint32_t volume;              // 22bit - in shares (expanded to support up to 4M shares)
   uint32_t turnover;            // 32bit - RMB
   uint16_t close;               // 14bit - price in 0.01 RMB units
   uint16_t bid_price_ticks[10]; // 14bits * 10 - prices in 0.01 RMB units
-  uint16_t bid_volumes[10];     // 14bits * 10 - units of 100 shares
+  uint32_t bid_volumes[10];     // 22bits * 10 - in shares (expanded to support up to 4M shares per level)
   uint16_t ask_price_ticks[10]; // 14bits * 10 - prices in 0.01 RMB units
-  uint16_t ask_volumes[10];     // 14bits * 10 - units of 100 shares
+  uint32_t ask_volumes[10];     // 22bits * 10 - in shares (expanded to support up to 4M shares per level)
   bool direction;               // 1bit - 0: buy, 1: sell (vwap_last > vwap_now)
   uint16_t all_bid_vwap;        // 15bit - vwap in 0.001 RMB units of all bid orders
   uint16_t all_ask_vwap;        // 15bit - vwap in 0.001 RMB units of all ask orders
-  uint32_t all_bid_volume;      // 22bit - volume of all bid orders in 100 shares
-  uint32_t all_ask_volume;      // 22bit - volume of all ask orders in 100 shares
+  uint32_t all_bid_volume;      // 22bit - volume of all bid orders in shares
+  uint32_t all_ask_volume;      // 22bit - volume of all bid orders in shares
 };
 
 // 逐笔合并(增删改成交)
@@ -89,7 +89,7 @@ struct Order {
   uint8_t order_type; // 2bit - 0:maker(order) 1:cancel 2:change 3:taker(trade)
   uint8_t order_dir;  // 1bit - 0:bid 1:ask
   uint16_t price;     // 14bit - price in 0.01 RMB units
-  uint16_t volume;    // 16bit - units of 100 shares
+  uint32_t volume;    // 22bit - in shares (expanded to support up to 4M shares)
 
   uint32_t bid_order_id; // 32bit
   uint32_t ask_order_id; // 32bit
@@ -110,15 +110,15 @@ struct LOB_Feature {
   bool is_cancel;      // 1bit
   bool is_bid;         // 1bit - 0:ask 1:bid
   uint16_t price;      // 14bit - price in 0.01 RMB units
-  uint16_t volume;     // 16bit - units of 100 shares
+  uint32_t volume;     // 22bit - in shares (expanded to support up to 4M shares)
 
   uint16_t bid_price_ticks[LOB_FEATURE_DEPTH_LEVELS]; // 14bits * N - prices in 0.01 RMB units
-  uint16_t bid_volumes[LOB_FEATURE_DEPTH_LEVELS];     // 14bits * N - units of 100 shares
+  uint32_t bid_volumes[LOB_FEATURE_DEPTH_LEVELS];     // 22bits * N - in shares (expanded to support up to 4M shares per level)
   uint16_t ask_price_ticks[LOB_FEATURE_DEPTH_LEVELS]; // 14bits * N - prices in 0.01 RMB units
-  uint16_t ask_volumes[LOB_FEATURE_DEPTH_LEVELS];     // 14bits * N - units of 100 shares
+  uint32_t ask_volumes[LOB_FEATURE_DEPTH_LEVELS];     // 22bits * N - in shares (expanded to support up to 4M shares per level)
 
-  uint32_t all_bid_volume;      // 22bit - volume of all bid orders in 100 shares
-  uint32_t all_ask_volume;      // 22bit - volume of all ask orders in 100 shares
+  uint32_t all_bid_volume;      // 22bit - volume of all bid orders in shares
+  uint32_t all_ask_volume;      // 22bit - volume of all bid orders in shares
 };
 
 namespace OrderType {
@@ -144,25 +144,25 @@ constexpr ColumnMeta Snapshot_Schema[] = {
     {"minute",             6  },// "取值范围 0-59，6bit 足够"},
     {"second",             6  },// "取值范围 0-59，6bit 足够"},
     {"trade_count",        8  },// "波动较大, 多数时候为0或小值"},
-    {"volume",             16 },// "波动较大，但也有大量0"},
+    {"volume",             22 },// "成交量(股), expanded to 22bit to support up to 4M shares"},
     {"turnover",           32 },// "波动较大，但也有大量0"},
     {"close",              14 },// "价格(0.01 RMB units)"},
     {"bid_price_ticks[10]",14 },// "订单价(0.01 RMB units)"},
-    {"bid_volumes[10]",    14 },// "订单量"},
+    {"bid_volumes[10]",    22 },// "订单量(股), expanded to 22bit to support up to 4M shares per level"},
     {"ask_price_ticks[10]",14 },// "订单价(0.01 RMB units)"},
-    {"ask_volumes[10]",   14  },// "订单量"},
+    {"ask_volumes[10]",    22 },// "订单量(股), expanded to 22bit to support up to 4M shares per level"},
     {"direction",         1   },// "仅买/卖两种值"},
     {"all_bid_vwap",      15  },// "VWAP价格(0.001 RMB units)"},
     {"all_ask_vwap",      15  },// "VWAP价格(0.001 RMB units)"},
-    {"all_bid_volume",    22  },// "总量"},
-    {"all_ask_volume",    22  },// "总量"},
+    {"all_bid_volume",    22  },// "总量(股)"},
+    {"all_ask_volume",    22  },// "总量(股)"},
 
     // order
     {"millisecond",       7   },// "取值范围 0-127，7bit 足够"},
     {"order_type",        2   },// "仅增删改成交四种值"},
     {"order_dir",         1   },// "仅bid ask 两种值"},
     {"price",             14  },// "价格(0.01 RMB units)"},
-    {"volume",            16  },// "成交量"},
+    {"volume",            22  },// "成交量(股), expanded to 22bit to support up to 4M shares"},
     {"bid_order_id",      32  },// "订单id"},
     {"ask_order_id",      32  },// "订单id"},
   };

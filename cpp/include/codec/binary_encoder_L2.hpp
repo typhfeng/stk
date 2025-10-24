@@ -31,21 +31,21 @@ struct CSVSnapshot {
   uint32_t date;
   uint32_t time;
   uint32_t price;       // in 0.01 RMB units
-  uint32_t volume;      // in 100-share units
+  uint32_t volume;      // in shares
   uint64_t turnover;    // in fen
   uint32_t trade_count; // incremental count
 
   // 10-level orderbook
   uint32_t bid_prices[10];  // in 0.01 RMB units
-  uint32_t bid_volumes[10]; // in 100-share units
+  uint32_t bid_volumes[10]; // in shares
   uint32_t ask_prices[10];  // in 0.01 RMB units
-  uint32_t ask_volumes[10]; // in 100-share units
+  uint32_t ask_volumes[10]; // in shares
 
   // Aggregated orderbook info
   uint32_t weighted_avg_bid_price; // VWAP in 0.001 RMB units
   uint32_t weighted_avg_ask_price; // VWAP in 0.001 RMB units
-  uint32_t total_bid_volume;       // in 100-share units
-  uint32_t total_ask_volume;       // in 100-share units
+  uint32_t total_bid_volume;       // in shares
+  uint32_t total_ask_volume;       // in shares
 };
 
 // Order data (逐笔委托)
@@ -59,7 +59,7 @@ struct CSVOrder {
   char order_type;            // SSE: A=add, D=delete; SZSE: varies
   char order_side;            // B=bid, S=ask
   uint32_t price;             // in 0.01 RMB units
-  uint32_t volume;            // in 100-share units
+  uint32_t volume;            // in shares
 };
 
 // Trade data (逐笔成交)
@@ -73,7 +73,7 @@ struct CSVTrade {
   char dummy_code; // unused
   char bs_flag;    // B=buy, S=sell, empty=cancel
   uint32_t price;  // in 0.01 RMB units
-  uint32_t volume; // in 100-share units
+  uint32_t volume; // in shares
   uint64_t ask_order_id;
   uint64_t bid_order_id;
 };
@@ -150,7 +150,7 @@ public:
   static uint32_t parse_time_to_ms(uint32_t time_int);
   static inline uint32_t parse_price_to_fen(std::string_view str);
   static inline uint32_t parse_vwap_price(std::string_view str);
-  static inline uint32_t parse_volume_to_100shares(std::string_view str);
+  static inline uint32_t parse_volume(std::string_view str);
   static inline uint64_t parse_turnover_to_fen(std::string_view str);
 
 private:

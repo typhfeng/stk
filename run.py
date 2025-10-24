@@ -16,7 +16,7 @@ import time
 # ============================================================================
 # Configuration
 # ============================================================================
-ENABLE_PROFILE = True
+ENABLE_PROFILE = False
 APP_NAME = "main"                              # C++ project name
 CPUPROFILE_FREQUENCY = 1000000                 # Profiler sampling rate (Hz)
 PROFILER_LIB = '/usr/lib/x86_64-linux-gnu/libprofiler.so.0'

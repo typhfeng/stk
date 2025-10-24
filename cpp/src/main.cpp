@@ -1,8 +1,8 @@
-#include "lob/LimitOrderBook.hpp"
 #include "codec/L2_DataType.hpp"
 #include "codec/binary_decoder_L2.hpp"
 #include "codec/binary_encoder_L2.hpp"
 #include "codec/json_config.hpp"
+#include "lob/LimitOrderBook.hpp"
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
 #include "misc/progress_parallel.hpp"
@@ -440,10 +440,10 @@ void process_analysis_for_asset(const std::string &asset_code, const std::vector
     double elapsed_seconds = std::chrono::duration<double>(current_time - start_time).count();
     double speed_M_per_sec = (elapsed_seconds > 0) ? (cumulative_orders / 1e6) / elapsed_seconds : 0.0;
     double total_M = cumulative_orders / 1e6;
-    
+
     char msg_buf[128];
     snprintf(msg_buf, sizeof(msg_buf), "%s [%.1fM/s(%.0fM)]", date_str.c_str(), speed_M_per_sec, total_M);
-    
+
     progress_handle.update(i + 1, dates.size(), msg_buf);
   }
 }
@@ -562,8 +562,7 @@ int main() {
         }
       }
 
-      analysis_tasks.push_back(
-          std::async(std::launch::async, process_analysis_for_asset, asset.asset_code, asset.dates, temp_dir, analysis_progress->acquire_slot(asset.asset_code + " (" + asset.asset_name + ")")));
+      analysis_tasks.push_back(std::async(std::launch::async, process_analysis_for_asset, asset.asset_code, asset.dates, temp_dir, analysis_progress->acquire_slot(asset.asset_code + " (" + asset.asset_name + ")")));
     }
 
     for (auto &task : analysis_tasks) {

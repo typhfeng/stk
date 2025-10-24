@@ -44,8 +44,8 @@ public:
   // Convert VWAP price from internal format to readable format (0.001 RMB units)
   static inline double vwap_to_rmb(uint16_t vwap_ticks);
 
-  // Convert volume from internal format to readable format (hot path - inlined)
-  static inline uint32_t volume_to_shares(uint16_t volume_100shares);
+  // Get volume as-is (no conversion needed, already in shares)
+  static inline uint32_t get_volume(uint32_t volume_shares);
 
   // Helper function to extract count from filename (used by dictionary compression)
   static size_t extract_count_from_filename(const std::string &filepath);

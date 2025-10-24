@@ -14,7 +14,7 @@
  * Usage:
  *   Logger::init(temp_base_path);
  *   Logger::log_decomp("Worker started");
- *   Logger::log_encoding("Failed to parse CSV: " + filepath);
+ *   Logger::log_encode("Failed to parse CSV: " + filepath);
  *   Logger::close();
  */
 
@@ -34,7 +34,10 @@ void close();
 void log_decomp(const std::string &message);
 
 // Parsing error logging functions
-void log_encoding(const std::string &message);
+void log_encode(const std::string &message);
+
+// Analysis logging functions
+void log_analyze(const std::string &message);
 
 // Check if logging is initialized
 bool is_initialized();
