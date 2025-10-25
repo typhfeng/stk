@@ -9,7 +9,6 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
-#include <unordered_map>
 #include <vector>
 
 #include "codec/L2_DataType.hpp"
@@ -39,7 +38,7 @@
 #define DEBUG_ORDER_PRINT 0         // Print every order processing
 #define DEBUG_ORDER_FLAGS_CREATE 0  // Print when order with special flags is created
 #define DEBUG_ORDER_FLAGS_RESOLVE 0 // Print when order with special flags is resolved/migrated
-#define DEBUG_BOOK_PRINT 0          // Print order book snapshot
+#define DEBUG_BOOK_PRINT 1          // Print order book snapshot
 #define DEBUG_BOOK_BY_SECOND 1      // 0: by tick, 1: every 1 second, 2: every 2 seconds, ...
 #define DEBUG_BOOK_AS_AMOUNT 1      // 0: 股, 1: 1万元, 2: 2万元, 3: 3万元, ...
 #define DEBUG_ANOMALY_PRINT 1       // Print max unmatched order with creation timestamp
@@ -93,10 +92,11 @@ namespace AnomalyDetection {
 constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to check anomalies
 }
 
-//========================================================================================
-// CORE ARCHITECTURE: ORDER-CENTRIC LOB WITH ADAPTIVE PLACEMENT
-//========================================================================================
-//
+// Effective TOB filter parameters
+namespace EffectiveTOBFilter {
+constexpr uint32_t MIN_TIME_INTERVAL_MS = 100; // Minimum time interval in milliseconds for effective TOB update
+}
+
 // 设计理念: 抵扣模型 + Order迁移机制
 // --------------------------------------------------------------------------------
 // - TAKER成交价是最终真相, MAKER挂价可能不准确
@@ -134,48 +134,18 @@ constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to ch
 // - O(n)遍历开销可忽略
 // - 统一接口: Level[0]和其他Level使用相同的操作(add/remove/move)
 //
-// Order Flags (订单状态标记):
-// --------------------------------------------------------------------------------
-// enum class OrderFlags : uint8_t {
-//   NORMAL,          // 正常订单 (价格方向都确定且匹配)
-//   UNKNOWN,         // 未知类型 (信息不足, 暂时标记)
-//   OUT_OF_ORDER,    // 乱序到达 (TAKER/CANCEL先于MAKER)
-//   CALL_AUCTION,    // 集合竞价订单 (价格可能不是最终成交价)
-//   SPECIAL_MAKER,   // 特殊挂单 (price=0的市价单等)
-//   ZERO_PRICE,      // 零价格订单 (CANCEL等, price=0)
-//   ANOMALY_MATCH    // 异常撮合 (连续竞价时价格/方向不匹配)
-// };
-//
 //========================================================================================
 // CORNER CASES SUMMARY
 //========================================================================================
 //
 // 交易所逐笔数据存在多种corner cases (总计~5% orders):
 //
-// 1. OUT_OF_ORDER (乱序到达) - ~2-5%
-//    - TAKER/CANCEL先于对应MAKER到达
-//    - 预创建Order, MAKER到达后抵扣
-//
-// 2. CALL_AUCTION (集合竞价) - 9:15-9:30, 14:57-15:00
-//    - MAKER挂价 ≠ 最终撮合价 (统一竞价撮合价)
-//    - TAKER到达时按成交价迁移Order
-//
-// 3. SPECIAL_MAKER (特殊挂单) - ~1-2%
-//    - 市价单('1'), 本方最优('U')等price=0的订单
-//    - 存放于Level[0], TAKER到达时迁移到成交价
-//
-// 4. ZERO_PRICE_CANCEL (深交所零价格撤单) - ~5-10% of cancels
-//    - 深交所撤单无价格信息(price=0)
-//    - 存放于Level[0], MAKER到达时迁移到挂单价
-//
-// 5. ANOMALY_MATCH (异常撮合) - rare
-//    - 连续竞价时, MAKER挂价 ≠ TAKER成交价 (非集合竞价)
-//    - 可能是盘中算法单等特殊撮合规则
-//    - 按TAKER成交价迁移Order, 标记flags=ANOMALY_MATCH
-//
-// 6. UNKNOWN (信息不足) - temporary
-//    - 无法确定订单类型时的暂时状态
-//    - 等待后续数据澄清
+// 1. OUT_OF_ORDER (乱序到达) - ~2-5% - TAKER/CANCEL先于MAKER到达, 预创建Order后抵扣
+// 2. CALL_AUCTION (集合竞价) - 9:15-9:30, 14:57-15:00 - MAKER挂价≠撮合价, TAKER到达时迁移
+// 3. SPECIAL_MAKER (特殊挂单) - ~1-2% - 市价单('1')/本方最优('U')等price=0订单, 存Level[0]后迁移
+// 4. ZERO_PRICE_CANCEL (深交所零价格撤单) - ~5-10% of cancels - 深交所撤单price=0, 存Level[0]待MAKER到达迁移
+// 5. ANOMALY_MATCH (异常撮合) - rare - 连续竞价时MAKER挂价≠TAKER成交价, 按成交价迁移并标记
+// 6. UNKNOWN (信息不足) - temporary - 无法确定订单类型的暂时状态, 等待后续数据澄清
 //
 //========================================================================================
 // ORDER PROCESSING FLOW (3 ORDER TYPES)
@@ -301,79 +271,37 @@ constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to ch
 // ANOMALY_MATCH:   1x hash + move + flag update             → O(1)
 // Level[0] scan:   O(n) where n < 10 typically              → negligible
 //
-// Memory:
-// --------------------------------------------------------------------------------
-// Order 对象:      16 bytes (含padding, cache-aligned)
-// Level 对象:      64 bytes (cache-line aligned)
-// 全局索引:        order_lookup_ (O(1) 查找, 超低load factor)
-// 总体占用:        ~20 bytes/Order (含索引和level开销)
-// 内存布局:        所有Order统一存储于Levels, 无额外队列
-//
 //========================================================================================
 // LOB_FEATURE N-LEVEL DEPTH MAINTENANCE (真正的O(1)增量更新)
 //========================================================================================
 //
-// 设计目标: 保证每个order处理后，LOB_Feature的N档深度数据准确，实现真正的O(1)高效维护
-//
 // 核心数据结构:
 // --------------------------------------------------------------------------------
-// - LOB_feature_.bid_price_ticks[N]:       bid N档的价格数组
-// - LOB_feature_.ask_price_ticks[N]:       ask N档的价格数组
-// - LOB_feature_.bid_volumes[N]:           bid N档的volume数组
-// - LOB_feature_.ask_volumes[N]:           ask N档的volume数组
-// - feature_price_to_index_:               统一的价格→索引映射 (unordered_map<Price, uint8_t>)
-//                                          bid索引0-19，ask索引20-39，只记录边界内的level
-// - feature_bid_bottom_price_:             bid第N档价格 (边界值，离TOB最远，主干维护)
-// - feature_ask_top_price_:                ask第N档价格 (边界值，离TOB最远，主干维护)
-// - feature_depth_valid_:                  深度数据是否有效的标志位
+// - LOB_feature_.bid_price_ticks[N]:         bid N档的价格数组 (index→price)
+// - LOB_feature_.ask_price_ticks[N]:         ask N档的价格数组 (index→price)
+// - LOB_feature_.bid_volumes[N]:             bid N档的volume数组
+// - LOB_feature_.ask_volumes[N]:             ask N档的volume数组
+// - feature_bid_price_to_index_:             price→index映射 (bid侧)
+// - feature_ask_price_to_index_:             price→index映射 (ask侧)
+// - best_bid_/best_ask_:                     逐笔TOB (每次TAKER成交后更新)
+// - effective_best_bid_level_/ask_level_:    过滤后的TOB Level指针 (条件满足时更新)
 //
-// 核心优化思想 (基于边界值的O(1)判断):
+// 核心优化思想 (双向映射 + 增量更新 + 过滤TOB):
 // --------------------------------------------------------------------------------
-// 99%的时候，LOB档位数远大于N档 (通常100+档位，N=20时)
-// 只维护price→index的map + bid_bottom/ask_top两个边界值
+// 1. **Level增删 (结构变化)**: 检查price是否在映射中，若在则局部rebuild
+// 2. **Volume变化 (HOT PATH)**: O(1)查映射→O(1)直接更新数组元素
+// 3. **Effective TOB**: 仅在fully consumed且满足过滤条件时更新，避免频繁rebuild
+//    过滤条件: 时间间隔(>=XXms) && bid正量 && ask负量 && ask>bid
+//    触发时机: 仅在TAKER fully consume某一侧档位时检查
 //
-// 关键规则: 只有create/remove level出现在这4个边界值之间时，档位结构才可能变化
-//   - Bid side: [feature_bid_bottom_price_, best_bid_]
-//   - Ask side: [best_ask_, feature_ask_top_price_]
-//
-// 增量更新策略:
+// 性能特征:
 // --------------------------------------------------------------------------------
-// 1. ULTRA-FAST PATH (99%+ cases): 档位在远端，不在top N内
-//    → 直接忽略，无需任何操作
-//    → O(1)边界判断 + 0开销
-//
-// 2. FAST PATH: 档位在top N内，只是volume变化
-//    → feature_update_volume_if_in_map(): O(1) hash查找 + O(1)数组更新
-//    → 在map中找到price，直接通过index更新volume
-//    → 无需重建，真正的O(1)
-//
-// 3. SLOW PATH: 需要全量重建 (仅当档位结构可能变化)
-//    ├─ TOB改变 (best_bid_/best_ask_变化) → 顶部档位结构变化
-//    ├─ 档位create/remove发生在[bid_bottom, best_bid]或[best_ask, ask_top]之间
-//    └─ 这种情况极少 (<1% orders)
-//    → feature_depth_valid_ = false
-//    → 在process()末尾，满足严格条件时才调用 feature_refresh_depth() 重建
-//
-// 4. 重建触发条件优化 (避免乱序期间的不必要更新):
-//    只有同时满足以下所有条件时才执行重建：
-//    ├─ new_sec_ = true (新的秒，避免同一秒内频繁更新，比new_tick更粗粒度)
-//    ├─ best_ask > best_bid (价格合理，spread正常)
-//    ├─ volume_best_bid > 0 (bid方向正确，正值表示买压)
-//    └─ volume_best_ask < 0 (ask方向正确，负值表示卖压)
-//    → 等待乱序问题解决后再更新，显著降低重建频率
-//
-// 5. 边界值维护 (在主干逐笔维护，保证永远正确):
-//    ├─ feature_bid_bottom_price_: 在rebuild时同步更新
-//    ├─ feature_ask_top_price_: 在rebuild时同步更新
-//    └─ 未来可优化为在visibility变化时实时维护
-//
-// 性能优化效果:
-// --------------------------------------------------------------------------------
-// - 远端档位变化 (99%+): O(1)边界判断 + 直接忽略 → 0开销
-// - Top N档位volume变化: O(1) hash查找 + O(1)更新 → 真正的O(1)
-// - 档位结构变化 (<1%): O(N)重建 → 可忽略
-// - 相比之前的实现，避免了大量不必要的O(N)遍历和重建
-//
+// - Volume变化 (99%+): O(1) hash + O(1)数组更新 = 真O(1)
+// - Level删除 (<1%):   O(1) hash + O(N-index)局部rebuild
+// - Level添加 (<1%):   O(1)判断 + O(N-index)局部rebuild
+// - Effective更新:     仅在fully consumed时触发，极少overhead
+// - 零浪费:            不在depth内的变化完全跳过
+
 //========================================================================================
 // CONSTANTS AND TYPES
 //========================================================================================
@@ -433,14 +361,14 @@ struct alignas(CACHE_LINE_SIZE) Level {
   explicit Level(Price p) : price(p) {
     orders.reserve(EXPECTED_QUEUE_SIZE);
   }
-  
+
   // Move constructor (for deque reallocation optimization)
   Level(Level &&other) noexcept
       : price(other.price),
         net_quantity(other.net_quantity),
         order_count(other.order_count),
         orders(std::move(other.orders)) {}
-  
+
   // Disable copy to prevent accidental expensive copies
   Level(const Level &) = delete;
   Level &operator=(const Level &) = delete;
@@ -511,8 +439,10 @@ public:
 
   explicit LimitOrderBook(size_t ORDER_SIZE = L2::DEFAULT_ENCODER_ORDER_SIZE, ExchangeType exchange_type = ExchangeType::SSE)
       : price_levels_(10),
-        order_lookup_(ORDER_SIZE),      // Custom Dict with pre-allocated capacity
-        order_memory_pool_(ORDER_SIZE), // Custom BumpPool for Order objects
+        order_lookup_(ORDER_SIZE),                                 // Custom Dict with pre-allocated capacity
+        order_memory_pool_(ORDER_SIZE),                            // Custom BumpPool for Order objects
+        feature_bid_price_to_index_(L2::LOB_FEATURE_DEPTH_LEVELS), // Price->index map for bid side
+        feature_ask_price_to_index_(L2::LOB_FEATURE_DEPTH_LEVELS), // Price->index map for ask side
         exchange_type_(exchange_type) {
     // Custom pools are pre-configured with optimal settings
     // No need for max_load_factor/rehash - handled internally
@@ -809,13 +739,13 @@ public:
 
   // Get best bid (highest buy price)
   HOT_NOINLINE Price best_bid() const {
-    update_tob();
+    init_tob();
     return best_bid_;
   }
 
   // Get best ask (lowest sell price)
   HOT_NOINLINE Price best_ask() const {
-    update_tob();
+    init_tob();
     return best_ask_;
   }
 
@@ -849,7 +779,7 @@ public:
   // Iterate through visible bid levels (descending price order)
   template <typename Func>
   void for_each_visible_bid(Func &&callback, size_t max_levels = 5) const {
-    update_tob();
+    init_tob();
     visibility_refresh_cache();
 
     if (best_bid_ == 0 || cached_visible_prices_.empty())
@@ -874,7 +804,7 @@ public:
   // Iterate through visible ask levels (ascending price order)
   template <typename Func>
   void for_each_visible_ask(Func &&callback, size_t max_levels = 5) const {
-    update_tob();
+    init_tob();
     visibility_refresh_cache();
 
     if (best_ask_ == 0 || cached_visible_prices_.empty())
@@ -911,11 +841,13 @@ public:
     best_bid_ = 0;
     best_ask_ = 0;
     tob_dirty_ = true;
+    effective_best_bid_level_ = nullptr;
+    effective_best_ask_level_ = nullptr;
+    tob_is_effective_ = false;
+    next_effective_update_tick_ = 0;
     LOB_feature_ = {};
-    feature_price_to_index_.clear();
-    feature_bid_bottom_price_ = 0;
-    feature_ask_top_price_ = 0;
-    feature_depth_valid_ = false;
+    feature_bid_price_to_index_.clear();
+    feature_ask_price_to_index_.clear();
     prev_tick_ = 0;
     curr_tick_ = 0;
     new_tick_ = false;
@@ -949,24 +881,28 @@ private:
   mutable std::vector<Price> cached_visible_prices_;  // Sorted cache for fast iteration
   mutable bool cache_dirty_ = false;                  // Cache needs refresh flag
 
-  // Top of book tracking
-  mutable Price best_bid_ = 0;    // Best bid price (highest buy price with visible quantity)
-  mutable Price best_ask_ = 0;    // Best ask price (lowest sell price with visible quantity)
+  // Top of book tracking (tick-by-tick)
+  mutable Price best_bid_ = 0;    // Best bid price (tick-by-tick, highest buy price with visible quantity)
+  mutable Price best_ask_ = 0;    // Best ask price (tick-by-tick, lowest sell price with visible quantity)
   mutable bool tob_dirty_ = true; // TOB needs recalculation flag
+  
+  // Effective TOB for feature depth (filtered tick-by-tick)
+  mutable Level *effective_best_bid_level_ = nullptr; // Effective best bid level (filtered)
+  mutable Level *effective_best_ask_level_ = nullptr; // Effective best ask level (filtered)
+  mutable bool tob_is_effective_ = false; // Filter condition: time + valid state + ask > bid
+  mutable uint32_t next_effective_update_tick_ = 0; // Next tick when effective TOB can be updated
 
   // LOB Feature tracking (for high-frequency factor computation)
   // Updated in real-time during order processing - zero overhead
   mutable L2::LOB_Feature LOB_feature_;
 
-  // Feature depth O(1) maintenance: 边界值在主干逐笔维护
-  mutable std::unordered_map<Price, uint8_t> feature_price_to_index_; // price -> index mapping for levels within boundary
-  mutable Price feature_bid_bottom_price_ = 0;                        // Nth bid level price (farthest from TOB) - 主干维护
-  mutable Price feature_ask_top_price_ = 0;                           // Nth ask level price (farthest from TOB) - 主干维护
-  mutable bool feature_depth_valid_ = false;                          // Whether depth is valid
-
   // Order tracking infrastructure (BumpDict/Pool for per-day reset pattern, ~10x faster than Bitmap)
   MemPool::BumpDict<OrderId, Location, OrderIdHash> order_lookup_; // OrderId -> Location(Level*, index) for O(1) order lookup (bump allocator, batch reset at EOD)
   MemPool::BumpPool<Order> order_memory_pool_;                     // Memory pool for Order object allocation (bump allocator, batch reset at EOD)
+
+  // Feature depth maintenance: price->index mapping for O(1) volume update
+  mutable MemPool::BumpDict<Price, uint8_t> feature_bid_price_to_index_; // price -> index in bid_price_ticks[]
+  mutable MemPool::BumpDict<Price, uint8_t> feature_ask_price_to_index_; // price -> index in ask_price_ticks[]
 
   // Market timestamp tracking (hour|minute|second|millisecond)
   uint32_t prev_tick_ = 0; // Previous tick timestamp
@@ -1003,6 +939,86 @@ private:
   //======================================================================================
   // Symmetric API for managing price levels in the order book
 
+  // Unified partial rebuild: is_bid controls direction
+  HOT_INLINE void feature_rebuild_from(uint8_t start_idx, bool is_bid) {
+    constexpr size_t N = L2::LOB_FEATURE_DEPTH_LEVELS;
+    auto &price_ticks = is_bid ? LOB_feature_.bid_price_ticks : LOB_feature_.ask_price_ticks;
+    auto &volumes = is_bid ? LOB_feature_.bid_volumes : LOB_feature_.ask_volumes;
+    auto &price_to_idx = is_bid ? feature_bid_price_to_index_ : feature_ask_price_to_index_;
+
+    // Clear old mappings
+    for (size_t i = start_idx; i < N && price_ticks[i] != 0; ++i) {
+      price_to_idx.erase(price_ticks[i]);
+    }
+
+    // Find starting price
+    Price price;
+    if (start_idx > 0) {
+      price = is_bid ? next_bid_below(price_ticks[start_idx - 1] - 1)
+                     : next_ask_above(price_ticks[start_idx - 1] + 1);
+    } else {
+      // Use effective TOB level for starting point
+      Level *effective_level = is_bid ? effective_best_bid_level_ : effective_best_ask_level_;
+      price = effective_level ? effective_level->price : 0;
+    }
+
+    // Rebuild from start_idx
+    size_t i = start_idx;
+    for (; i < N && price > 0;) {
+      Level *level = level_find(price);
+      if (level && level->has_visible_quantity()) {
+        price_ticks[i] = price;
+        volumes[i] = static_cast<uint32_t>(std::abs(level->net_quantity));
+        price_to_idx.insert(price, static_cast<uint8_t>(i));
+        ++i;
+      }
+      price = is_bid ? next_bid_below(price - 1) : next_ask_above(price + 1);
+    }
+
+    // Clear remaining slots
+    for (; i < N; ++i) {
+      price_ticks[i] = 0;
+      volumes[i] = 0;
+    }
+  }
+
+  // On structure change: check if price in depth range
+  HOT_INLINE void feature_on_structure_change(Price price, bool is_add) {
+    // Skip if effective TOB not initialized
+    if (!effective_best_bid_level_ || !effective_best_ask_level_) return;
+    
+    constexpr size_t N = L2::LOB_FEATURE_DEPTH_LEVELS;
+    const Price bid_bottom = LOB_feature_.bid_price_ticks[N - 1];
+    const Price ask_top = LOB_feature_.ask_price_ticks[N - 1];
+    const Price effective_best_bid = effective_best_bid_level_->price;
+    const Price effective_best_ask = effective_best_ask_level_->price;
+    
+    // Check if price in bid depth range [bid_bottom, effective_best_bid]
+    const bool in_bid_depth = (bid_bottom > 0 && price >= bid_bottom && price <= effective_best_bid);
+    
+    // Check if price in ask depth range [effective_best_ask, ask_top]
+    const bool in_ask_depth = (ask_top > 0 && price >= effective_best_ask && price <= ask_top);
+    
+    // If in depth or could enter depth (add case), rebuild
+    const bool could_enter_depth = is_add && 
+      ((price <= effective_best_bid && (bid_bottom == 0 || price > bid_bottom)) ||
+       (price >= effective_best_ask && (ask_top == 0 || price < ask_top)));
+    
+    if (in_bid_depth || in_ask_depth || could_enter_depth) {
+      feature_rebuild_from(0, true);
+      feature_rebuild_from(0, false);
+    }
+  }
+
+  // On volume change: O(1) direct update
+  HOT_INLINE void feature_on_volume_change(Price price, Quantity new_net_qty) {
+    if (const uint8_t *idx = feature_bid_price_to_index_.find(price)) {
+      LOB_feature_.bid_volumes[*idx] = static_cast<uint32_t>(std::abs(new_net_qty));
+    } else if (const uint8_t *idx = feature_ask_price_to_index_.find(price)) {
+      LOB_feature_.ask_volumes[*idx] = static_cast<uint32_t>(std::abs(new_net_qty));
+    }
+  }
+
   // Query: Find existing level by price (returns nullptr if not found)
   HOT_INLINE Level *level_find(Price price) const {
     Level *const *level_ptr = price_levels_.find(price);
@@ -1016,6 +1032,7 @@ private:
     if (inserted) [[unlikely]] {
       level_storage_.emplace_back(price);
       *level_ptr = &level_storage_.back();
+      feature_on_structure_change(price, true);
     }
     return *level_ptr;
   }
@@ -1025,14 +1042,17 @@ private:
     level_storage_.emplace_back(price);
     Level *level = &level_storage_.back();
     price_levels_.insert(price, level);
+    feature_on_structure_change(price, true);
     return level;
   }
 
   // Remove: Delete empty level from book
   HOT_INLINE void level_remove(Level *level, bool update_visibility = true) {
-    price_levels_.erase(level->price);
+    Price price = level->price;
+    feature_on_structure_change(price, false);
+    price_levels_.erase(price);
     if (update_visibility) {
-      visibility_mark_invisible_safe(level->price);
+      visibility_mark_invisible_safe(price);
     }
   }
 
@@ -1230,6 +1250,9 @@ private:
         LOB_feature_.all_bid_volume += (quantity_delta > 0) ? abs_delta : 0;
         LOB_feature_.all_ask_volume += (quantity_delta < 0) ? abs_delta : 0;
 
+        // Update feature depth volume (O(1) if in depth)
+        feature_on_volume_change(price, level->net_quantity);
+
         // Update flags if needed (rare)
         if ((flags != OrderFlags::NORMAL || order->flags != OrderFlags::NORMAL)) [[unlikely]] {
 #if DEBUG_ORDER_FLAGS_RESOLVE
@@ -1349,7 +1372,7 @@ private:
   //======================================================================================
 
   // Bootstrap TOB from visible prices (lazy initialization)
-  HOT_INLINE void update_tob() const {
+  HOT_INLINE void init_tob() const {
     if (!tob_dirty_)
       return;
 
@@ -1361,14 +1384,35 @@ private:
     tob_dirty_ = false;
   }
 
+  // Check and update effective level (bid or ask)
+  HOT_INLINE void check_update_effective_level(bool is_bid) {
+    if (curr_tick_ < next_effective_update_tick_) return;
+    if (best_ask_ <= best_bid_) return;
+    
+    Level *level = level_find(is_bid ? best_bid_ : best_ask_);
+    const bool valid = is_bid ? (level && level->net_quantity > 0) 
+                              : (level && level->net_quantity < 0);
+    if (!valid) return;
+    
+    if (is_bid) {
+      effective_best_bid_level_ = level;
+    } else {
+      effective_best_ask_level_ = level;
+    }
+    next_effective_update_tick_ = curr_tick_ + (EffectiveTOBFilter::MIN_TIME_INTERVAL_MS / 10);
+  }
+
   // Update one side of TOB after trade
   HOT_INLINE void update_tob_one_side(bool is_active_bid, bool was_fully_consumed, Price trade_price) {
+    // Update tick-by-tick TOB
     if (was_fully_consumed) {
       // Level emptied - advance to next level
       if (is_active_bid) {
         best_ask_ = next_ask_above(trade_price);
+        check_update_effective_level(false);
       } else {
         best_bid_ = next_bid_below(trade_price);
+        check_update_effective_level(true);
       }
     } else {
       // Level partially filled - TOB stays at trade price
@@ -1559,7 +1603,7 @@ private:
   void check_anomaly(Level *level) const {
     using namespace TradingSession;
     using namespace AnomalyDetection;
-    update_tob();
+    init_tob();
 
     // Step 1: Distance filter - only check far levels (N+ ticks from TOB)
     const bool is_far_below_bid = (best_bid_ > 0 && level->price < best_bid_ - MIN_DISTANCE_FROM_TOB);
@@ -1656,7 +1700,7 @@ private:
 
       using namespace BookDisplay;
 
-      update_tob();
+      init_tob();
 
       // Skip printing if TOB is invalid (e.g. after flush_call_auction_flags)
       if (best_bid_ > best_ask_)
@@ -1700,7 +1744,6 @@ private:
       std::reverse(ask_data.begin(), ask_data.end());
 
       // Display ask levels (left side, negate for display)
-      book_output << "ASK: ";
       size_t ask_empty_spaces = MAX_DISPLAY_LEVELS - ask_data.size();
       for (size_t i = 0; i < ask_empty_spaces; ++i) {
         book_output << std::setw(LEVEL_WIDTH) << " ";
@@ -1727,8 +1770,26 @@ private:
           book_output << std::setw(LEVEL_WIDTH) << std::left << level_str;
         }
       }
-
-      book_output << "| BID: ";
+      
+      // Display header with both ASK and BID labels together
+      const Price effective_best_ask = effective_best_ask_level_ ? effective_best_ask_level_->price : 0;
+      const Price effective_best_bid = effective_best_bid_level_ ? effective_best_bid_level_->price : 0;
+      const bool ask_differs = (effective_best_ask != best_ask_);
+      const bool bid_differs = (effective_best_bid != best_bid_);
+      
+      book_output << " (" << std::setw(4) << effective_best_ask << ")";
+      if (ask_differs) {
+        book_output << "\033[31mASK\033[0m";
+      } else {
+        book_output << "ASK";
+      }
+      book_output << " | ";
+      if (bid_differs) {
+        book_output << "\033[31mBID\033[0m";
+      } else {
+        book_output << "BID";
+      }
+      book_output << "(" << std::setw(4) << effective_best_bid << ") ";
 
       // Collect bid levels
       std::vector<std::pair<Price, Quantity>> bid_data;
