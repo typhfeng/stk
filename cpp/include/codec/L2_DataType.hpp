@@ -40,10 +40,10 @@ inline constexpr size_t LOB_FEATURE_DEPTH_LEVELS = 20; // Number of depth levels
 
 // Resample
 inline constexpr int RESAMPLE_INIT_VOLUME_THD = 10000; // initial volume threshold (n*shares*100rmb/100 = n*100rmb)
-inline constexpr int RESAMPLE_TRADE_HRS_PER_DAY = 4; // number of trading hours in a day
-inline constexpr int RESAMPLE_MIN_PERIOD = 1;        // minimal sample period (in seconds)
-inline constexpr int RESAMPLE_TARGET_PERIOD = 30;    // target sample period (in seconds) (more dense sample in the morning)
-inline constexpr int RESAMPLE_EMA_DAYS_PERIOD = 5;   // shouldn't be too large, std(delta_t) will instead go larger
+inline constexpr int RESAMPLE_TRADE_HRS_PER_DAY = 4;   // number of trading hours in a day
+inline constexpr int RESAMPLE_MIN_PERIOD = 1;          // minimal sample period (in seconds)
+inline constexpr int RESAMPLE_TARGET_PERIOD = 30;      // target sample period (in seconds) (more dense sample in the morning)
+inline constexpr int RESAMPLE_EMA_DAYS_PERIOD = 5;     // shouldn't be too large, std(delta_t) will instead go larger
 // days   3   5   10  25
 // stddev 108 110 114 124
 
@@ -104,21 +104,21 @@ struct LOB_Feature {
   uint8_t minute;      // 6bit
   uint8_t second;      // 6bit
   uint8_t millisecond; // 7bit (in 10ms)
-  
-  bool is_maker;       // 1bit
-  bool is_taker;       // 1bit
-  bool is_cancel;      // 1bit
-  bool is_bid;         // 1bit - 0:ask 1:bid
-  uint16_t price;      // 14bit - price in 0.01 RMB units
-  uint32_t volume;     // 22bit - in shares (expanded to support up to 4M shares)
+
+  bool is_maker;   // 1bit
+  bool is_taker;   // 1bit
+  bool is_cancel;  // 1bit
+  bool is_bid;     // 1bit - 0:ask 1:bid
+  uint16_t price;  // 14bit - price in 0.01 RMB units
+  uint32_t volume; // 22bit - in shares (expanded to support up to 4M shares)
 
   uint16_t bid_price_ticks[LOB_FEATURE_DEPTH_LEVELS]; // 14bits * N - prices in 0.01 RMB units
-  uint32_t bid_volumes[LOB_FEATURE_DEPTH_LEVELS];     // 22bits * N - in shares (expanded to support up to 4M shares per level)
+  int32_t bid_volumes[LOB_FEATURE_DEPTH_LEVELS];      // 22bits * N - signed, positive for bid (expanded to support up to 4M shares per level)
   uint16_t ask_price_ticks[LOB_FEATURE_DEPTH_LEVELS]; // 14bits * N - prices in 0.01 RMB units
-  uint32_t ask_volumes[LOB_FEATURE_DEPTH_LEVELS];     // 22bits * N - in shares (expanded to support up to 4M shares per level)
+  int32_t ask_volumes[LOB_FEATURE_DEPTH_LEVELS];      // 22bits * N - signed, negative for ask (expanded to support up to 4M shares per level)
 
-  uint32_t all_bid_volume;      // 22bit - volume of all bid orders in shares
-  uint32_t all_ask_volume;      // 22bit - volume of all bid orders in shares
+  uint32_t all_bid_volume; // 22bit - volume of all bid orders in shares
+  uint32_t all_ask_volume; // 22bit - volume of all bid orders in shares
 };
 
 namespace OrderType {

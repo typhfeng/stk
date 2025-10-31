@@ -197,6 +197,8 @@ inline std::vector<std::string> generate_date_range(const std::string &start_dat
         snprintf(date_buf, sizeof(date_buf), "%04d%02d%02d", year, month, day);
         const std::string date_str(date_buf);
 
+        // If archive base exists, only include dates with existing archives
+        // If not, include all dates (will be filtered in encoding/analysis phase)
         if (!has_archive_base || std::filesystem::exists(generate_archive_path(l2_archive_base, date_str))) {
           dates.push_back(date_str);
         }
