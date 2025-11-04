@@ -1322,7 +1322,7 @@ private:
   // Unified printer: calls both real-time and buffered for comparison
   void inline print_book() const {
     if (depth_updated_) {
-      print_book_realtime();
+      // print_book_realtime();
       print_book_buffered();
     }
   }

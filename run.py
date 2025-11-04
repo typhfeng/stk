@@ -51,7 +51,8 @@ def _cleanup_old_profiler():
 def _find_pprof_command():
     """Find pprof executable."""
     for cmd in ["pprof", "google-pprof", os.path.expanduser("~/go/bin/pprof")]:
-        result = subprocess.run(["which", cmd], capture_output=True, check=False)
+        result = subprocess.run(
+            ["which", cmd], capture_output=True, check=False)
         if result.returncode == 0:
             return cmd
     return None
@@ -117,7 +118,8 @@ def run_with_profiling(binary_path, working_dir):
     if os.path.exists(profile_file):
         _show_profile_report(binary_path, profile_file)
     else:
-        print("\nProfile not generated. Install: sudo apt-get install libgoogle-perftools-dev")
+        print(
+            "\nProfile not generated. Install: sudo apt-get install libgoogle-perftools-dev")
 
 
 def build_project(app_name, enable_profile_mode):
