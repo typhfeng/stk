@@ -1,19 +1,12 @@
 #pragma once
 
-// ============================================================================
-// FEATURE DEFINITIONS - All Levels Schema
-// ============================================================================
-// This file contains ONLY feature field definitions for all levels
-// No computation logic, no storage implementation - pure schema
-
-// ============================================================================
-// LEVEL 0: Tick-level Features (Highest Frequency)
-// ============================================================================
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
 
+// ============================================================================
+// LEVEL 0: Tick-level Features
+// ============================================================================
 #define LEVEL_0_FIELDS(X)                        \
   X(timestamp, "Event timestamp in nanoseconds") \
   X(mid_price, "Mid price (bid+ask)/2")          \
@@ -26,7 +19,7 @@
   X(mpg_z, "Micro-price gap z-score")
 
 // ============================================================================
-// LEVEL 1: Minute-level Features (1 minute intervals) - Candle/OHLC
+// LEVEL 1: Minute-level Features
 // ============================================================================
 
 #define LEVEL_1_FIELDS(X)                  \
@@ -39,7 +32,7 @@
   X(volume, "Total volume (tick count proxy)")
 
 // ============================================================================
-// LEVEL 2: Hour-level Features (1 hour intervals) - Support/Resistance
+// LEVEL 2: Hour-level Features
 // ============================================================================
 
 #define LEVEL_2_FIELDS(X)                                        \

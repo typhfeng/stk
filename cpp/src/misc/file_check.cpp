@@ -38,7 +38,7 @@ bool check_required_commands() {
   }
 
   if (ok) {
-    std::cout << "✓ All required commands available\n";
+    std::cout << "✓ Required commands      : all available\n";
   }
   return ok;
 }
@@ -147,7 +147,7 @@ bool check_archive_format(const std::vector<std::string> &archives) {
   }
 
   if (ok) {
-    std::cout << "✓ All archives have correct format (RAR non-solid)\n";
+    std::cout << "✓ Archive format         : all correct (RAR non-solid)\n";
   }
 
   return ok;
@@ -200,7 +200,7 @@ bool check_incompatible_structure(const std::vector<std::string> &archives) {
   }
 
   if (problematic_files.empty()) {
-    std::cout << "✓ All archives have correct internal hierarchy\n";
+    std::cout << "✓ Internal hierarchy     : all correct\n";
     return true;
   }
 
@@ -305,7 +305,7 @@ bool check_archive_naming(const std::string &archive_base_dir) {
   }
 
   if (problems.empty()) {
-    std::cout << "✓ All " << valid_count << " archive paths and names are correct\n";
+    std::cout << "✓ Archive naming         : all " << valid_count << " correct\n";
     return true;
   }
 

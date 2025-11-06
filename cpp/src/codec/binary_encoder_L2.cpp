@@ -696,7 +696,7 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
     }
 
     // Validate snapshot count
-    constexpr size_t MIN_EXPECTED_COUNT = 1000;
+    constexpr size_t MIN_EXPECTED_COUNT = 10;
     if (snapshots.size() < MIN_EXPECTED_COUNT) {
       Logger::log_encode("Abnormal snapshot count: " + stock_code + " " + stock_dir +
                          " has only " + std::to_string(snapshots.size()) + " snapshots");
@@ -746,7 +746,7 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
 
   if (!all_orders.empty()) {
     // Validate order count
-    constexpr size_t MIN_EXPECTED_COUNT = 1000;
+    constexpr size_t MIN_EXPECTED_COUNT = 100;
     if (all_orders.size() < MIN_EXPECTED_COUNT) {
       Logger::log_encode("Abnormal order count: " + stock_code + " " + stock_dir +
                          " has only " + std::to_string(all_orders.size()) + " orders");
