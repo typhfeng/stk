@@ -89,25 +89,25 @@ constexpr size_t MAX_ROWS_PER_LEVEL[LEVEL_COUNT] = {
 
 // Convert time to index for specific level
 inline size_t time_to_index(size_t level_idx, uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond) {
-  const LevelTimeConfig& cfg = LEVEL_CONFIGS[level_idx];
-  
+  const LevelTimeConfig &cfg = LEVEL_CONFIGS[level_idx];
+
   switch (cfg.unit) {
-    case TimeUnit::MILLISECOND: {
-      const size_t ms = time_to_trading_milliseconds(hour, minute, second, millisecond);
-      return ms / cfg.interval;
-    }
-    case TimeUnit::SECOND: {
-      const size_t sec = time_to_trading_seconds(hour, minute, second);
-      return sec / cfg.interval;
-    }
-    case TimeUnit::MINUTE: {
-      const size_t sec = time_to_trading_seconds(hour, minute, second);
-      return (sec / 60) / cfg.interval;
-    }
-    case TimeUnit::HOUR: {
-      const size_t sec = time_to_trading_seconds(hour, minute, second);
-      return (sec / 3600) / cfg.interval;
-    }
+  case TimeUnit::MILLISECOND: {
+    const size_t ms = time_to_trading_milliseconds(hour, minute, second, millisecond);
+    return ms / cfg.interval;
+  }
+  case TimeUnit::SECOND: {
+    const size_t sec = time_to_trading_seconds(hour, minute, second);
+    return sec / cfg.interval;
+  }
+  case TimeUnit::MINUTE: {
+    const size_t sec = time_to_trading_seconds(hour, minute, second);
+    return (sec / 60) / cfg.interval;
+  }
+  case TimeUnit::HOUR: {
+    const size_t sec = time_to_trading_seconds(hour, minute, second);
+    return (sec / 3600) / cfg.interval;
+  }
   }
   return 0;
 }

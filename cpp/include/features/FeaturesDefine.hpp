@@ -65,7 +65,7 @@
 // ============================================================================
 
 constexpr size_t TRADE_HOURS_PER_DAY = 4;
-constexpr size_t TRADE_SECONDS_PER_DAY = TRADE_HOURS_PER_DAY * 3600;  // 14400 seconds
+constexpr size_t TRADE_SECONDS_PER_DAY = TRADE_HOURS_PER_DAY * 3600; // 14400 seconds
 
 // Time unit types
 enum class TimeUnit : uint8_t {
@@ -78,14 +78,18 @@ enum class TimeUnit : uint8_t {
 // Level time configuration
 struct LevelTimeConfig {
   TimeUnit unit;
-  size_t interval;  // Number of units per time index
-  
+  size_t interval; // Number of units per time index
+
   constexpr size_t max_capacity() const {
     switch (unit) {
-      case TimeUnit::MILLISECOND: return (TRADE_SECONDS_PER_DAY * 1000) / interval + 1;
-      case TimeUnit::SECOND: return TRADE_SECONDS_PER_DAY / interval + 1;
-      case TimeUnit::MINUTE: return (TRADE_SECONDS_PER_DAY / 60) / interval + 1;
-      case TimeUnit::HOUR: return (TRADE_SECONDS_PER_DAY / 3600) / interval + 1;
+    case TimeUnit::MILLISECOND:
+      return (TRADE_SECONDS_PER_DAY * 1000) / interval + 1;
+    case TimeUnit::SECOND:
+      return TRADE_SECONDS_PER_DAY / interval + 1;
+    case TimeUnit::MINUTE:
+      return (TRADE_SECONDS_PER_DAY / 60) / interval + 1;
+    case TimeUnit::HOUR:
+      return (TRADE_SECONDS_PER_DAY / 3600) / interval + 1;
     }
     return TRADE_SECONDS_PER_DAY + 1;
   }
@@ -93,9 +97,9 @@ struct LevelTimeConfig {
 
 // Predefined level configurations
 constexpr LevelTimeConfig LEVEL_CONFIGS[3] = {
-  {TimeUnit::SECOND, 1},   // L0: 1s
-  {TimeUnit::MINUTE, 1},   // L1: 1min
-  {TimeUnit::HOUR, 1}      // L2: 1hour
+    {TimeUnit::SECOND, 1}, // L0: 1s
+    {TimeUnit::MINUTE, 1}, // L1: 1min
+    {TimeUnit::HOUR, 1}    // L2: 1hour
 };
 
 // ============================================================================
