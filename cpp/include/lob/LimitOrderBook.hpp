@@ -10,9 +10,9 @@
 #include "codec/L2_DataType.hpp"
 #include "define/FastBitmap.hpp"
 #include "define/MemPool.hpp"
-#include "features/FeaturesTick.hpp"
-#include "features/FeaturesMinute.hpp"
 #include "features/FeaturesHour.hpp"
+#include "features/FeaturesMinute.hpp"
+#include "features/FeaturesTick.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "lob/LimitOrderBookDefine.hpp"
 #include "math/sample/ResampleRunBar.hpp"
@@ -113,9 +113,9 @@ public:
 #endif
 
       // // Trigger all 3 levels (each extracts everything from LOB_Feature internally)
-      // features_tick_.compute_and_store();
-      // features_minute_.compute_and_store();
-      // features_hour_.compute_and_store();
+      features_tick_.compute_and_store();
+      features_minute_.compute_and_store();
+      features_hour_.compute_and_store();
     }
 
     // ========================= lob update ==============================

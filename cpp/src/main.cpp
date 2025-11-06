@@ -523,9 +523,10 @@ void analysis_worker_date_first(const std::vector<AssetTask> &assigned_assets,
     auto current_time = std::chrono::steady_clock::now();
     double elapsed_seconds = std::chrono::duration<double>(current_time - start_time).count();
     double speed_M_per_sec = (elapsed_seconds > 0) ? (cumulative_orders / 1e6) / elapsed_seconds : 0.0;
+    double avg_orders_per_asset_M = assigned_assets.size() > 0 ? (static_cast<double>(cumulative_orders) / assigned_assets.size()) / 1e6 : 0.0;
     
     char msg_buf[128];
-    snprintf(msg_buf, sizeof(msg_buf), "%s [%.1fM/s]", date_str.c_str(), speed_M_per_sec);
+    snprintf(msg_buf, sizeof(msg_buf), "%s [%.1fM/s (%.1fM)]", date_str.c_str(), speed_M_per_sec, avg_orders_per_asset_M);
     progress_handle.update(date_idx + 1, all_dates.size(), msg_buf);
   }
 }
