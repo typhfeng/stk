@@ -88,7 +88,7 @@ constexpr const char *BIN_EXTENSION = ".bin";
 // Path settings - modify these for your environment
 constexpr const char *DEFAULT_CONFIG_FILE = "../../../../config/config.json";
 constexpr const char *DEFAULT_STOCK_INFO_FILE = "../../../../config/daily_holding/stock_info_test.json";
-constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/mnt/dev/sde/A_stock/L2";
+constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/media/chuyin/48ac8067-d3b7-4332-b652-45e367a1ebcc/A_stock/L2"; // "/mnt/dev/sde/A_stock/L2";
 constexpr const char *DEFAULT_TEMP_DIR = "../../../../output/database";
 
 // Processing settings - modify for different behaviors
