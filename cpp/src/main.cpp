@@ -17,12 +17,10 @@
 #include <future>
 #include <iostream>
 #include <mutex>
-#include <numeric>
 #include <random>
-#include <regex>
 #include <set>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 // ============================================================================
@@ -111,61 +109,52 @@ inline std::string generate_temp_asset_dir(const std::string &temp_dir, const st
   return temp_dir + "/" + date_str.substr(0, 4) + "/" + date_str.substr(4, 2) + "/" + date_str.substr(6, 2) + "/" + asset_code;
 }
 
-inline bool is_leap_year(int year) {
-  return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
-}
-
-inline int get_days_in_month(int year, int month) {
-  if (month == 2) {
-    return is_leap_year(year) ? 29 : 28;
-  }
-  if (month == 4 || month == 6 || month == 9 || month == 11) {
-    return 30;
-  }
-  return 31;
-}
-
-inline std::vector<std::string> generate_date_range(const std::string &start_date, const std::string &end_date, const std::string &l2_archive_base) {
-  std::vector<std::string> dates;
-
-  std::regex date_regex(R"((\d{4})_(\d{2})_(\d{2}))");
-  std::smatch start_match, end_match;
-
-  if (!std::regex_match(start_date, start_match, date_regex) || !std::regex_match(end_date, end_match, date_regex)) {
-    return dates;
-  }
-
-  const int start_year = std::stoi(start_match[1]);
-  const int start_mon = std::stoi(start_match[2]);
-  const int start_day = std::stoi(start_match[3]);
-  const int end_year = std::stoi(end_match[1]);
-  const int end_mon = std::stoi(end_match[2]);
-  const int end_day = std::stoi(end_match[3]);
-
-  const bool has_archive_base = std::filesystem::exists(l2_archive_base);
-
-  for (int year = start_year; year <= end_year; ++year) {
-    const int mon_start = (year == start_year) ? start_mon : 1;
-    const int mon_end = (year == end_year) ? end_mon : 12;
-
-    for (int month = mon_start; month <= mon_end; ++month) {
-      const int day_start = (year == start_year && month == start_mon) ? start_day : 1;
-      const int day_end = (year == end_year && month == end_mon) ? end_day : get_days_in_month(year, month);
-
-      for (int day = day_start; day <= day_end; ++day) {
-        char date_buf[9];
-        snprintf(date_buf, sizeof(date_buf), "%04d%02d%02d", year, month, day);
-        const std::string date_str(date_buf);
-
-        // If archive base exists, only include dates with existing archives
-        // If not, include all dates (will be filtered in encoding/analysis phase)
-        if (!has_archive_base || std::filesystem::exists(generate_archive_path(l2_archive_base, date_str))) {
-          dates.push_back(date_str);
+// Scan RAR archive directory to collect all trading dates
+inline std::set<std::string> collect_dates_from_archives(const std::string &l2_archive_base) {
+  std::set<std::string> dates;
+  if (!std::filesystem::exists(l2_archive_base)) return dates;
+  
+  // Archive structure: archive_base/YYYY/YYYYMM/YYYYMMDD.rar
+  for (const auto &year_entry : std::filesystem::directory_iterator(l2_archive_base)) {
+    if (!year_entry.is_directory()) continue;
+    
+    for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path())) {
+      if (!month_entry.is_directory()) continue;
+      
+      for (const auto &file_entry : std::filesystem::directory_iterator(month_entry.path())) {
+        const std::string filename = file_entry.path().stem().string();
+        if (filename.size() == 8 && std::all_of(filename.begin(), filename.end(), ::isdigit)) {
+          dates.insert(filename);
         }
       }
     }
   }
+  return dates;
+}
 
+// Scan binary directory to collect all trading dates
+inline std::set<std::string> collect_dates_from_binaries(const std::string &temp_dir_base) {
+  std::set<std::string> dates;
+  if (!std::filesystem::exists(temp_dir_base)) return dates;
+  
+  // Binary structure: temp_dir/YYYY/MM/DD/asset_code/
+  for (const auto &year_entry : std::filesystem::directory_iterator(temp_dir_base)) {
+    if (!year_entry.is_directory()) continue;
+    const std::string year_str = year_entry.path().filename().string();
+    
+    for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path())) {
+      if (!month_entry.is_directory()) continue;
+      const std::string month_str = month_entry.path().filename().string();
+      
+      for (const auto &day_entry : std::filesystem::directory_iterator(month_entry.path())) {
+        if (!day_entry.is_directory()) continue;
+        const std::string day_str = day_entry.path().filename().string();
+        
+        const std::string date_str = year_str + month_str + day_str;
+        dates.insert(date_str);
+      }
+    }
+  }
   return dates;
 }
 } // namespace Utils
@@ -197,7 +186,7 @@ struct AssetInfo {
   // ===== Per-date information =====
   struct DateInfo {
     size_t order_count{0};      // Order count (written during encoding)
-    uint8_t encoded{0};         // 0=not encoded, 1=encoded
+    uint8_t encoded{0};         // 0=not encoded, 1=encoded (has binary or csv)
     uint8_t analyzed{0};        // 0=not analyzed, 1=analyzed
     std::string temp_dir;       // Cached temp directory path
     std::string snapshots_file; // Full path to snapshots binary file
@@ -212,35 +201,37 @@ struct AssetInfo {
   size_t asset_id;
   std::string asset_code;
   std::string asset_name;
-  std::vector<std::string> dates;
-  L2::ExchangeType exchange_type; // Cached exchange type
+  std::string start_date;
+  std::string end_date;
+  L2::ExchangeType exchange_type;
 
-  // ===== Per-date data =====
-  std::vector<DateInfo> date_info;
+  // ===== Per-date data (only for dates in [start_date, end_date]) =====
+  std::unordered_map<std::string, DateInfo> date_info;
 
   // ===== Analysis assignment =====
   int assigned_worker_id{-1};
 
   // Constructor
-  AssetInfo(size_t id, std::string code, std::string name, std::vector<std::string> ds)
+  AssetInfo(size_t id, std::string code, std::string name, std::string start, std::string end)
       : asset_id(id),
         asset_code(std::move(code)),
         asset_name(std::move(name)),
-        dates(std::move(ds)),
-        exchange_type(L2::infer_exchange_type(asset_code)),
-        date_info(dates.size()) {}
+        start_date(std::move(start)),
+        end_date(std::move(end)),
+        exchange_type(L2::infer_exchange_type(asset_code)) {}
 
-  // Initialize paths (called once after construction)
-  void init_paths(const std::string &temp_dir_base) {
-    for (size_t i = 0; i < dates.size(); ++i) {
-      date_info[i].temp_dir = Utils::generate_temp_asset_dir(temp_dir_base, dates[i], asset_code);
+  // Initialize paths for this asset's date range (based on global all_dates)
+  void init_paths(const std::string &temp_dir_base, const std::vector<std::string> &all_dates) {
+    for (const auto &date_str : all_dates) {
+      if (date_str >= start_date && date_str <= end_date) {
+        date_info[date_str].temp_dir = Utils::generate_temp_asset_dir(temp_dir_base, date_str, asset_code);
+      }
     }
   }
 
   // Scan existing binary files (for resume support)
   void scan_existing_binaries() {
-    for (size_t i = 0; i < dates.size(); ++i) {
-      auto &di = date_info[i];
+    for (auto &[date_str, di] : date_info) {
       if (!std::filesystem::exists(di.temp_dir))
         continue;
 
@@ -250,6 +241,7 @@ struct AssetInfo {
           di.snapshots_file = entry.path().string();
         } else if (filename.starts_with(asset_code + "_orders_") && filename.ends_with(Config::BIN_EXTENSION)) {
           di.orders_file = entry.path().string();
+          di.order_count = L2::BinaryDecoder_L2::extract_count_from_filename(di.orders_file);
         }
       }
 
@@ -262,21 +254,29 @@ struct AssetInfo {
   // Statistics
   size_t get_total_order_count() const {
     size_t total = 0;
-    for (const auto &di : date_info)
+    for (const auto &[_, di] : date_info)
       total += di.order_count;
     return total;
   }
 
+  size_t get_total_trading_days() const {
+    return date_info.size();
+  }
+
   size_t get_encoded_count() const {
     size_t count = 0;
-    for (const auto &di : date_info)
+    for (const auto &[_, di] : date_info)
       count += di.encoded;
     return count;
   }
 
+  size_t get_missing_count() const {
+    return get_total_trading_days() - get_encoded_count();
+  }
+
   size_t get_analyzed_count() const {
     size_t count = 0;
-    for (const auto &di : date_info)
+    for (const auto &[_, di] : date_info)
       count += di.analyzed;
     return count;
   }
@@ -296,19 +296,10 @@ struct SharedState {
 
   SharedState() = default;
 
-  // Initialize all_dates from assets
-  void finalize_dates() {
-    std::set<std::string> unique_dates_set;
-    for (const auto &asset : assets) {
-      unique_dates_set.insert(asset.dates.begin(), asset.dates.end());
-    }
-    all_dates.assign(unique_dates_set.begin(), unique_dates_set.end());
-  }
-
-  // Initialize all asset paths
+  // Initialize all asset paths (must be called after all_dates is populated)
   void init_paths(const std::string &temp_dir_base) {
     for (auto &asset : assets) {
-      asset.init_paths(temp_dir_base);
+      asset.init_paths(temp_dir_base, all_dates);
     }
   }
 
@@ -320,10 +311,24 @@ struct SharedState {
   }
 
   // Statistics
+  size_t total_trading_days() const {
+    size_t total = 0;
+    for (const auto &asset : assets)
+      total += asset.get_total_trading_days();
+    return total;
+  }
+
   size_t total_encoded_dates() const {
     size_t total = 0;
     for (const auto &asset : assets)
       total += asset.get_encoded_count();
+    return total;
+  }
+
+  size_t total_missing_dates() const {
+    size_t total = 0;
+    for (const auto &asset : assets)
+      total += asset.get_missing_count();
     return total;
   }
 
@@ -468,36 +473,31 @@ void encoding_worker(SharedState &state, std::vector<size_t> &asset_id_queue, st
     AssetInfo &asset = state.assets[asset_id];
     progress_handle.set_label(asset.asset_code + " (" + asset.asset_name + ")");
 
-    // Shuffle date indices to spread RAR access
-    std::vector<size_t> date_indices(asset.dates.size());
-    std::iota(date_indices.begin(), date_indices.end(), 0);
+    // Collect and shuffle dates to spread RAR access
+    std::vector<std::string> date_keys;
+    date_keys.reserve(asset.date_info.size());
+    for (const auto &[date_str, _] : asset.date_info) {
+      date_keys.push_back(date_str);
+    }
     std::random_device rd;
     std::mt19937 g(rd());
-    std::shuffle(date_indices.begin(), date_indices.end(), g);
+    std::shuffle(date_keys.begin(), date_keys.end(), g);
 
     // Process all dates for this asset
-    for (size_t i = 0; i < date_indices.size(); ++i) {
-      const size_t date_idx = date_indices[i];
-      const std::string &date_str = asset.dates[date_idx];
-      auto &date_info = asset.date_info[date_idx];
+    for (size_t i = 0; i < date_keys.size(); ++i) {
+      const std::string &date_str = date_keys[i];
+      auto &date_info = asset.date_info[date_str];
 
       // Skip if binary already exists
       if (date_info.encoded && Config::SKIP_EXISTING_BINARIES) {
-        // Still need to read order count if not set (for load balancing)
-        if (!date_info.orders_file.empty() && date_info.order_count == 0) {
-          std::vector<L2::Order> orders;
-          if (decoder.decode_orders(date_info.orders_file, orders)) {
-            date_info.order_count = orders.size();
-          }
-        }
-        progress_handle.update(i + 1, asset.dates.size(), date_str);
+        progress_handle.update(i + 1, date_keys.size(), date_str);
         continue;
       }
 
       // Check archive exists before attempting extraction
       const std::string archive_path = Utils::generate_archive_path(l2_archive_base, date_str);
       if (!std::filesystem::exists(archive_path)) {
-        progress_handle.update(i + 1, asset.dates.size(), date_str);
+        progress_handle.update(i + 1, date_keys.size(), date_str);
         continue;
       }
 
@@ -512,7 +512,7 @@ void encoding_worker(SharedState &state, std::vector<size_t> &asset_id_queue, st
         }
       }
 
-      progress_handle.update(i + 1, asset.dates.size(), date_str);
+      progress_handle.update(i + 1, date_keys.size(), date_str);
     }
   }
 }
@@ -540,7 +540,6 @@ void analysis_worker(const SharedState &state,
   // Initialize LOBs and decoders for each asset
   std::vector<std::unique_ptr<LimitOrderBook>> lobs;
   std::vector<std::unique_ptr<L2::BinaryDecoder_L2>> decoders;
-  std::vector<std::unordered_set<std::string>> date_sets;
 
   for (size_t asset_id : my_asset_ids) {
     const auto &asset = state.assets[asset_id];
@@ -548,7 +547,6 @@ void analysis_worker(const SharedState &state,
         L2::DEFAULT_ENCODER_ORDER_SIZE, asset.exchange_type, feature_store, asset.asset_id));
     decoders.push_back(std::make_unique<L2::BinaryDecoder_L2>(
         L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE));
-    date_sets.emplace_back(asset.dates.begin(), asset.dates.end());
   }
 
   // Progress label
@@ -575,14 +573,13 @@ void analysis_worker(const SharedState &state,
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = state.assets[asset_id];
 
-      if (date_sets[i].find(date_str) == date_sets[i].end()) {
+      // Check if this asset has data for this date
+      auto it = asset.date_info.find(date_str);
+      if (it == asset.date_info.end()) {
         continue;
       }
 
-      // Find date index in asset's dates
-      auto it = std::find(asset.dates.begin(), asset.dates.end(), date_str);
-      size_t asset_date_idx = it - asset.dates.begin();
-      const auto &date_info = asset.date_info[asset_date_idx];
+      const auto &date_info = it->second;
 
       feature_store->set_current_date(asset.asset_id, date_str);
 
@@ -665,24 +662,41 @@ int main() {
 
     // Build shared state
     SharedState state;
+    
+    // Step 1: Collect global trading dates (from RAR or binary directories)
+    std::set<std::string> global_dates = Utils::collect_dates_from_archives(l2_archive_base);
+    if (global_dates.empty()) {
+      global_dates = Utils::collect_dates_from_binaries(temp_dir);
+    }
+    state.all_dates.assign(global_dates.begin(), global_dates.end());
+    
+    // Step 2: Build assets with their date ranges
     for (const auto &[asset_code, stock_info] : stock_info_map) {
       const auto effective_start = std::max(std::chrono::year_month_day{stock_info.start_date / std::chrono::day{1}}, app_config.start_date);
       const auto effective_end = std::min(std::chrono::year_month_day{stock_info.end_date / std::chrono::last}, app_config.end_date);
-
-      const auto dates = Utils::generate_date_range(JsonConfig::FormatYearMonthDay(effective_start), JsonConfig::FormatYearMonthDay(effective_end), l2_archive_base);
-
-      if (!dates.empty()) {
-        state.assets.emplace_back(state.assets.size(), asset_code, stock_info.name, dates);
-      }
+      
+      const std::string start_str = JsonConfig::FormatYearMonthDay(effective_start);
+      const std::string end_str = JsonConfig::FormatYearMonthDay(effective_end);
+      
+      state.assets.emplace_back(state.assets.size(), asset_code, stock_info.name, start_str, end_str);
     }
 
-    // Initialize paths and dates
+    // Step 3: Initialize paths and scan existing binaries
     state.init_paths(temp_dir);
-    state.finalize_dates();
-    state.scan_all_existing_binaries(); // For resume support
+    state.scan_all_existing_binaries();
 
-    std::cout << "Date range: " << state.all_dates.front() << " → " << state.all_dates.back()
-              << " (" << state.all_dates.size() << " trading days)\n";
+    std::cout << "Global date range: " << state.all_dates.front() << " → " << state.all_dates.back()
+              << " (" << state.all_dates.size() << " unique trading days)\n\n";
+
+    std::cout << "Asset summary:\n";
+    for (const auto &asset : state.assets) {
+      std::cout << "  " << asset.asset_code << " (" << asset.asset_name << "): "
+                << asset.start_date << " → " << asset.end_date
+                << " | Total: " << asset.get_total_trading_days()
+                << ", Encoded: " << asset.get_encoded_count()
+                << ", Missing: " << asset.get_missing_count() << "\n";
+    }
+    std::cout << "\n";
 
     // Build asset ID queue for work distribution
     std::vector<size_t> asset_id_queue;
@@ -704,8 +718,12 @@ int main() {
     }
     encoding_progress->stop();
 
-    std::cout << "Encoding complete: " << state.assets.size() << " assets ("
-              << state.total_encoded_dates() << " date-asset pairs)\n\n";
+    std::cout << "\nEncoding complete:\n";
+    std::cout << "  Assets: " << state.assets.size() << "\n";
+    std::cout << "  Total trading days: " << state.total_trading_days() << "\n";
+    std::cout << "  Encoded: " << state.total_encoded_dates() 
+              << " (" << (state.total_trading_days() > 0 ? 100.0 * state.total_encoded_dates() / state.total_trading_days() : 0) << "%)\n";
+    std::cout << "  Missing: " << state.total_missing_dates() << "\n\n";
 
     // ========================================================================
     // PHASE 2: ANALYSIS
