@@ -5,6 +5,7 @@
 #include "features/backend/FeatureStore.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/affinity.hpp"
+#include "misc/file_convert.hpp"
 #include "misc/logging.hpp"
 #include "misc/progress_parallel.hpp"
 
@@ -112,15 +113,18 @@ inline std::string generate_temp_asset_dir(const std::string &temp_dir, const st
 // Scan RAR archive directory to collect all trading dates
 inline std::set<std::string> collect_dates_from_archives(const std::string &l2_archive_base) {
   std::set<std::string> dates;
-  if (!std::filesystem::exists(l2_archive_base)) return dates;
-  
+  if (!std::filesystem::exists(l2_archive_base))
+    return dates;
+
   // Archive structure: archive_base/YYYY/YYYYMM/YYYYMMDD.rar
   for (const auto &year_entry : std::filesystem::directory_iterator(l2_archive_base)) {
-    if (!year_entry.is_directory()) continue;
-    
+    if (!year_entry.is_directory())
+      continue;
+
     for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path())) {
-      if (!month_entry.is_directory()) continue;
-      
+      if (!month_entry.is_directory())
+        continue;
+
       for (const auto &file_entry : std::filesystem::directory_iterator(month_entry.path())) {
         const std::string filename = file_entry.path().stem().string();
         if (filename.size() == 8 && std::all_of(filename.begin(), filename.end(), ::isdigit)) {
@@ -135,21 +139,25 @@ inline std::set<std::string> collect_dates_from_archives(const std::string &l2_a
 // Scan binary directory to collect all trading dates
 inline std::set<std::string> collect_dates_from_binaries(const std::string &temp_dir_base) {
   std::set<std::string> dates;
-  if (!std::filesystem::exists(temp_dir_base)) return dates;
-  
+  if (!std::filesystem::exists(temp_dir_base))
+    return dates;
+
   // Binary structure: temp_dir/YYYY/MM/DD/asset_code/
   for (const auto &year_entry : std::filesystem::directory_iterator(temp_dir_base)) {
-    if (!year_entry.is_directory()) continue;
+    if (!year_entry.is_directory())
+      continue;
     const std::string year_str = year_entry.path().filename().string();
-    
+
     for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path())) {
-      if (!month_entry.is_directory()) continue;
+      if (!month_entry.is_directory())
+        continue;
       const std::string month_str = month_entry.path().filename().string();
-      
+
       for (const auto &day_entry : std::filesystem::directory_iterator(month_entry.path())) {
-        if (!day_entry.is_directory()) continue;
+        if (!day_entry.is_directory())
+          continue;
         const std::string day_str = day_entry.path().filename().string();
-        
+
         const std::string date_str = year_str + month_str + day_str;
         dates.insert(date_str);
       }
@@ -274,6 +282,17 @@ struct AssetInfo {
     return get_total_trading_days() - get_encoded_count();
   }
 
+  std::vector<std::string> get_missing_dates() const {
+    std::vector<std::string> missing;
+    for (const auto &[date_str, di] : date_info) {
+      if (!di.encoded) {
+        missing.push_back(date_str);
+      }
+    }
+    std::sort(missing.begin(), missing.end());
+    return missing;
+  }
+
   size_t get_analyzed_count() const {
     size_t count = 0;
     for (const auto &[_, di] : date_info)
@@ -295,6 +314,27 @@ struct SharedState {
   // std::unordered_map<std::string, CrossSectionalData> cross_sectional_cache;
 
   SharedState() = default;
+
+  // Populate all_dates from filesystem and filter by date range
+  void init_dates(const std::string &l2_archive_base, 
+                  const std::string &temp_dir,
+                  const std::string &start_date_str,
+                  const std::string &end_date_str) {
+    // Collect all dates from archives or binaries
+    std::set<std::string> global_dates = Utils::collect_dates_from_archives(l2_archive_base);
+    if (global_dates.empty()) {
+      global_dates = Utils::collect_dates_from_binaries(temp_dir);
+    }
+    
+    // Filter dates to match config date range
+    std::set<std::string> filtered_dates;
+    for (const auto &date_str : global_dates) {
+      if (date_str >= start_date_str && date_str <= end_date_str) {
+        filtered_dates.insert(date_str);
+      }
+    }
+    all_dates.assign(filtered_dates.begin(), filtered_dates.end());
+  }
 
   // Initialize all asset paths (must be called after all_dates is populated)
   void init_paths(const std::string &temp_dir_base) {
@@ -363,10 +403,12 @@ inline bool extract_and_encode(const std::string &archive_path,
 
   const std::string archive_name = std::filesystem::path(archive_path).stem().string();
   const std::string asset_path_in_archive = archive_name + "/" + asset_code + "/*";
-  const std::string command = std::string(Config::ARCHIVE_TOOL) + " " +
-                              std::string(Config::ARCHIVE_EXTRACT_CMD) + " \"" +
-                              archive_path + "\" \"" + asset_path_in_archive + "\" \"" +
-                              temp_extract_dir + "/\" -y > /dev/null 2>&1";
+  
+  // Use unrar to extract
+  std::string command = std::string(Config::ARCHIVE_TOOL) + " " +
+            std::string(Config::ARCHIVE_EXTRACT_CMD) + " \"" +
+            archive_path + "\" \"" + asset_path_in_archive + "\" \"" +
+            temp_extract_dir + "/\" -y > /dev/null 2>&1";
 
   if (std::system(command.c_str()) != 0) {
     std::filesystem::remove_all(temp_extract_dir);
@@ -656,28 +698,33 @@ int main() {
     std::cout << "Workers: " << num_workers << " (processing " << stock_info_map.size() << " assets)\n\n";
 
     // ========================================================================
+    // STAGE 0: ARCHIVE FORMAT VALIDATION AND CONVERSION
+    // ========================================================================
+    if (!FileConvert::validate_and_convert_archives(l2_archive_base)) {
+      return 1;
+    }
+
+    // ========================================================================
     // PHASE 1: ENCODING (can be out-of-order, uses RAR locks)
     // ========================================================================
     std::cout << "=== Phase 1: Encoding ===" << "\n";
 
     // Build shared state
     SharedState state;
-    
-    // Step 1: Collect global trading dates (from RAR or binary directories)
-    std::set<std::string> global_dates = Utils::collect_dates_from_archives(l2_archive_base);
-    if (global_dates.empty()) {
-      global_dates = Utils::collect_dates_from_binaries(temp_dir);
-    }
-    state.all_dates.assign(global_dates.begin(), global_dates.end());
-    
+
+    // Step 1: Initialize global trading dates (filtered by config date range)
+    const std::string config_start_str = JsonConfig::FormatYearMonthDay(app_config.start_date);
+    const std::string config_end_str = JsonConfig::FormatYearMonthDay(app_config.end_date);
+    state.init_dates(l2_archive_base, temp_dir, config_start_str, config_end_str);
+
     // Step 2: Build assets with their date ranges
     for (const auto &[asset_code, stock_info] : stock_info_map) {
       const auto effective_start = std::max(std::chrono::year_month_day{stock_info.start_date / std::chrono::day{1}}, app_config.start_date);
       const auto effective_end = std::min(std::chrono::year_month_day{stock_info.end_date / std::chrono::last}, app_config.end_date);
-      
+
       const std::string start_str = JsonConfig::FormatYearMonthDay(effective_start);
       const std::string end_str = JsonConfig::FormatYearMonthDay(effective_end);
-      
+
       state.assets.emplace_back(state.assets.size(), asset_code, stock_info.name, start_str, end_str);
     }
 
@@ -690,11 +737,28 @@ int main() {
 
     std::cout << "Asset summary:\n";
     for (const auto &asset : state.assets) {
-      std::cout << "  " << asset.asset_code << " (" << asset.asset_name << "): "
-                << asset.start_date << " → " << asset.end_date
-                << " | Total: " << asset.get_total_trading_days()
-                << ", Encoded: " << asset.get_encoded_count()
-                << ", Missing: " << asset.get_missing_count() << "\n";
+      if (asset.get_missing_count() > 0) {
+
+        std::cout << "  " << asset.asset_code << " (" << asset.asset_name << "): "
+                  << asset.start_date << " → " << asset.end_date
+                  << " | Total: " << asset.get_total_trading_days()
+                  << ", Encoded: " << asset.get_encoded_count()
+                  << ", Missing: " << asset.get_missing_count();
+
+        const auto missing_dates = asset.get_missing_dates();
+        std::cout << " [";
+        const size_t show_count = std::min(size_t(5), missing_dates.size());
+        for (size_t i = 0; i < show_count; ++i) {
+          if (i > 0)
+            std::cout << ", ";
+          std::cout << missing_dates[i];
+        }
+        if (missing_dates.size() > show_count) {
+          std::cout << ", ...";
+        }
+        std::cout << "]";
+        std::cout << "\n";
+      }
     }
     std::cout << "\n";
 
@@ -721,7 +785,7 @@ int main() {
     std::cout << "\nEncoding complete:\n";
     std::cout << "  Assets: " << state.assets.size() << "\n";
     std::cout << "  Total trading days: " << state.total_trading_days() << "\n";
-    std::cout << "  Encoded: " << state.total_encoded_dates() 
+    std::cout << "  Encoded: " << state.total_encoded_dates()
               << " (" << (state.total_trading_days() > 0 ? 100.0 * state.total_encoded_dates() / state.total_trading_days() : 0) << "%)\n";
     std::cout << "  Missing: " << state.total_missing_dates() << "\n\n";
 

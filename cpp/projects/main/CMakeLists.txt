@@ -69,6 +69,7 @@ set(SOURCES
     ../../src/codec/binary_decoder_L2.cpp
     ../../src/codec/binary_encoder_L2.cpp
     ../../src/misc/logging.cpp
+    ../../src/misc/file_convert.cpp
     ../../src/main.cpp
 )
 
@@ -83,6 +84,7 @@ set(HEADERS
     ../../include/misc/progress_parallel.hpp
     ../../include/misc/affinity.hpp
     ../../include/misc/logging.hpp
+    ../../include/misc/file_convert.hpp
     ../../include/define/CBuffer.hpp
     ../../include/codec/json_config.hpp
     ../../include/codec/binary_decoder_L2.hpp

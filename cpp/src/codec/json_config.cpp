@@ -117,11 +117,11 @@ std::string FormatYearMonth(const std::chrono::year_month &ym) {
   return oss.str();
 }
 
-// Example: FormatYearMonthDay(2024y/3/15) returns "2024_03_15"
+// Example: FormatYearMonthDay(2024y/3/15) returns "20240315"
 std::string FormatYearMonthDay(const std::chrono::year_month_day &ymd) {
   std::ostringstream oss;
-  oss << static_cast<int>(ymd.year()) << "_" 
-      << std::setfill('0') << std::setw(2) << static_cast<unsigned>(ymd.month()) << "_"
+  oss << static_cast<int>(ymd.year())
+      << std::setfill('0') << std::setw(2) << static_cast<unsigned>(ymd.month())
       << std::setfill('0') << std::setw(2) << static_cast<unsigned>(ymd.day());
   return oss.str();
 }
