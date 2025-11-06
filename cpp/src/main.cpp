@@ -5,7 +5,7 @@
 #include "features/backend/FeatureStore.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/affinity.hpp"
-#include "misc/file_convert.hpp"
+#include "misc/file_check.hpp"
 #include "misc/logging.hpp"
 #include "misc/progress_parallel.hpp"
 
@@ -700,7 +700,7 @@ int main() {
     // ========================================================================
     // STAGE 0: ARCHIVE FORMAT VALIDATION AND CONVERSION
     // ========================================================================
-    if (!FileConvert::validate_and_convert_archives(l2_archive_base)) {
+    if (!FileCheck::check_src_archives(l2_archive_base)) {
       return 1;
     }
 
