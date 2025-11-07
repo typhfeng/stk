@@ -88,7 +88,11 @@ constexpr const char *BIN_EXTENSION = ".bin";
 // Path settings - modify these for your environment
 constexpr const char *DEFAULT_CONFIG_FILE = "../../../../config/config.json";
 constexpr const char *DEFAULT_STOCK_INFO_FILE = "../../../../config/daily_holding/stock_info_test.json";
-constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/media/chuyin/48ac8067-d3b7-4332-b652-45e367a1ebcc/A_stock/L2"; // "/mnt/dev/sde/A_stock/L2";
+
+constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/I/AM/A/FAKE/PATH/TO/SKIP/ARCHIVE/CHECK";
+// constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/mnt/dev/sde/A_stock/L2";
+//  constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/media/chuyin/48ac8067-d3b7-4332-b652-45e367a1ebcc/A_stock/L2";
+
 constexpr const char *DEFAULT_TEMP_DIR = "../../../../output/database";
 
 // Processing settings - modify for different behaviors
@@ -316,7 +320,7 @@ struct SharedState {
   SharedState() = default;
 
   // Populate all_dates from filesystem and filter by date range
-  void init_dates(const std::string &l2_archive_base, 
+  void init_dates(const std::string &l2_archive_base,
                   const std::string &temp_dir,
                   const std::string &start_date_str,
                   const std::string &end_date_str) {
@@ -325,7 +329,7 @@ struct SharedState {
     if (global_dates.empty()) {
       global_dates = Utils::collect_dates_from_binaries(temp_dir);
     }
-    
+
     // Filter dates to match config date range
     std::set<std::string> filtered_dates;
     for (const auto &date_str : global_dates) {
@@ -403,12 +407,12 @@ inline bool extract_and_encode(const std::string &archive_path,
 
   const std::string archive_name = std::filesystem::path(archive_path).stem().string();
   const std::string asset_path_in_archive = archive_name + "/" + asset_code + "/*";
-  
+
   // Use unrar to extract
   std::string command = std::string(Config::ARCHIVE_TOOL) + " " +
-            std::string(Config::ARCHIVE_EXTRACT_CMD) + " \"" +
-            archive_path + "\" \"" + asset_path_in_archive + "\" \"" +
-            temp_extract_dir + "/\" -y > /dev/null 2>&1";
+                        std::string(Config::ARCHIVE_EXTRACT_CMD) + " \"" +
+                        archive_path + "\" \"" + asset_path_in_archive + "\" \"" +
+                        temp_extract_dir + "/\" -y > /dev/null 2>&1";
 
   if (std::system(command.c_str()) != 0) {
     std::filesystem::remove_all(temp_extract_dir);
@@ -499,6 +503,10 @@ void encoding_worker(SharedState &state, std::vector<size_t> &asset_id_queue, st
   L2::BinaryEncoder_L2 encoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
   L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
 
+  // Initialize as idle (in case no asset is assigned)
+  progress_handle.set_label("Idle");
+  progress_handle.update(1, 1, "");
+
   while (true) {
     size_t asset_id;
 
@@ -568,6 +576,10 @@ void analysis_worker(const SharedState &state,
                      int worker_id,
                      GlobalFeatureStore *feature_store,
                      misc::ProgressHandle progress_handle) {
+
+  // Initialize as idle (will be updated if assets are assigned)
+  progress_handle.set_label("Idle");
+  progress_handle.update(1, 1, "");
 
   // Find assets assigned to this worker
   std::vector<size_t> my_asset_ids;
@@ -707,7 +719,7 @@ int main() {
     // ========================================================================
     // PHASE 1: ENCODING (can be out-of-order, uses RAR locks)
     // ========================================================================
-    std::cout << "=== Phase 1: Encoding ===" << "\n";
+    std::cout << "=== Phase 1: Encoding (generate binaries to output/database, run only once) ===" << "\n";
 
     // Build shared state
     SharedState state;
@@ -735,7 +747,7 @@ int main() {
     std::cout << "Global date range: " << state.all_dates.front() << " → " << state.all_dates.back()
               << " (" << state.all_dates.size() << " unique trading days)\n\n";
 
-    std::cout << "Asset summary:\n";
+    std::cout << "Asset summary (可能是停牌):\n";
     for (const auto &asset : state.assets) {
       if (asset.get_missing_count() > 0) {
 

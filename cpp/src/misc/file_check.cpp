@@ -13,6 +13,70 @@ namespace FileCheck {
 namespace {
 
 // ============================================================================
+// ARCHIVE VALIDATION DATA STRUCTURES
+// ============================================================================
+
+struct ArchiveErrors {
+    std::vector<std::string> naming_errors;
+    std::vector<std::string> format_errors;
+    std::vector<std::string> structure_errors;
+    std::vector<std::string> zip_files;
+};
+
+struct ArchiveCheckResult {
+    bool is_valid;
+    ArchiveErrors errors;
+    std::vector<std::string> valid_archives;
+};
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+bool is_valid_number_string(const std::string &str, size_t expected_len) {
+  if (str.length() != expected_len)
+    return false;
+  for (char c : str) {
+    if (!std::isdigit(c))
+      return false;
+  }
+  return true;
+}
+
+std::pair<bool, std::string> check_single_archive_structure(const std::string &archive_path) {
+  std::string cmd = "unrar lb \"" + archive_path + "\" 2>/dev/null | head -1";
+  FILE *pipe = popen(cmd.c_str(), "r");
+  if (!pipe) {
+    return {false, "cannot read archive"};
+  }
+
+  char buffer[512];
+  std::string first_entry;
+  if (fgets(buffer, sizeof(buffer), pipe)) {
+    first_entry = buffer;
+    if (!first_entry.empty() && first_entry.back() == '\n') {
+      first_entry.pop_back();
+    }
+  }
+  pclose(pipe);
+
+  if (first_entry.empty()) {
+    return {false, "empty archive"};
+  }
+
+  // Expected: YYYYMMDD/asset_code/*.csv (e.g., 20240925/000001.SZ/行情.csv)
+  if (first_entry.length() >= 9 && first_entry[8] == '/' &&
+      std::isdigit(first_entry[0]) && std::isdigit(first_entry[1]) &&
+      std::isdigit(first_entry[2]) && std::isdigit(first_entry[3]) &&
+      std::isdigit(first_entry[4]) && std::isdigit(first_entry[5]) &&
+      std::isdigit(first_entry[6]) && std::isdigit(first_entry[7])) {
+    return {true, ""};
+  }
+
+  return {false, "invalid structure: " + first_entry};
+}
+
+// ============================================================================
 // CHECK 1: REQUIRED COMMANDS
 // ============================================================================
 
@@ -38,7 +102,7 @@ bool check_required_commands() {
   }
 
   if (ok) {
-    std::cout << "✓ Required commands      : all available\n";
+    std::cout << "✓ Required commands      : all available (unrar, 7z, rar)\n";
   }
   return ok;
 }
@@ -89,14 +153,14 @@ bool detect_solid_rar(const std::string &archive_path) {
   if (header[4] == 0x1a && header[5] == 0x07 && header[6] == 0x00) {
     // Skip to main header block (after marker block)
     file.seekg(7, std::ios::beg);
-    
+
     // Read block header: HEAD_CRC(2) + HEAD_TYPE(1) + HEAD_FLAGS(2) + HEAD_SIZE(2)
     char block[7];
     file.read(block, 7);
-    
+
     unsigned char head_type = block[2];
     unsigned short head_flags = (unsigned char)block[3] | ((unsigned char)block[4] << 8);
-    
+
     // Archive header has type 0x73
     if (head_type == 0x73) {
       // Solid flag is bit 3 (0x0008) in archive header flags
@@ -107,261 +171,130 @@ bool detect_solid_rar(const std::string &archive_path) {
   return false;
 }
 
-bool check_archive_format(const std::vector<std::string> &archives) {
-  std::vector<std::string> disguised_7z;
-  std::vector<std::string> solid_rar;
-  
-  for (const auto &archive : archives) {
-    if (detect_7z_format(archive)) {
-      disguised_7z.push_back(archive);
-    } else if (detect_solid_rar(archive)) {
-      solid_rar.push_back(archive);
-    }
-  }
-
-  bool ok = true;
-
-  // Report disguised 7z files
-  if (!disguised_7z.empty()) {
-    std::cout << "✗ Found " << disguised_7z.size() << " .rar file(s) that are actually 7z format\n";
-    for (const auto &file : disguised_7z) {
-      std::cout << "  " << file << "\n";
-    }
-    std::cout << "\n";
-    std::cout << "  Fix: Run py/app/FileRepair/fix_7z_to_rar.py\n";
-    std::cout << "\n";
-    ok = false;
-  }
-
-  // Report solid RAR files
-  if (!solid_rar.empty()) {
-    std::cout << "✗ Found " << solid_rar.size() << " solid RAR file(s)\n";
-    for (const auto &file : solid_rar) {
-      std::cout << "  " << file << "\n";
-    }
-    std::cout << "\n";
-    std::cout << "  Solid archives don't support partial extraction\n";
-    std::cout << "  Fix: Run py/app/FileRepair/fix_solid_to_nonsolid.py\n";
-    std::cout << "\n";
-    ok = false;
-  }
-
-  if (ok) {
-    std::cout << "✓ Archive format         : all correct (RAR non-solid)\n";
-  }
-
-  return ok;
-}
 
 // ============================================================================
 // CHECK 3: INCOMPATIBLE ARCHIVE STRUCTURE
 // ============================================================================
 
-std::string detect_incompatible_structure(const std::string &archive_path) {
-  std::string cmd = "unrar lb \"" + archive_path + "\" 2>/dev/null | head -1";
-  FILE *pipe = popen(cmd.c_str(), "r");
-  if (!pipe) {
-    return "";
-  }
-
-  char buffer[512];
-  std::string first_entry;
-  if (fgets(buffer, sizeof(buffer), pipe)) {
-    first_entry = buffer;
-    if (!first_entry.empty() && first_entry.back() == '\n') {
-      first_entry.pop_back();
-    }
-  }
-  pclose(pipe);
-
-  if (first_entry.empty()) {
-    return "";
-  }
-
-  // Expected: YYYYMMDD/asset_code/*.csv (e.g., 20240925/000001.SZ/行情.csv)
-  if (first_entry.length() >= 9 && first_entry[8] == '/' &&
-      std::isdigit(first_entry[0]) && std::isdigit(first_entry[1]) &&
-      std::isdigit(first_entry[2]) && std::isdigit(first_entry[3]) &&
-      std::isdigit(first_entry[4]) && std::isdigit(first_entry[5]) &&
-      std::isdigit(first_entry[6]) && std::isdigit(first_entry[7])) {
-    return "";
-  }
-
-  return first_entry;
-}
-
-bool check_incompatible_structure(const std::vector<std::string> &archives) {
-  std::vector<std::pair<std::string, std::string>> problematic_files;
-  for (const auto &archive : archives) {
-    std::string detected_path = detect_incompatible_structure(archive);
-    if (!detected_path.empty()) {
-      problematic_files.push_back({archive, detected_path});
-    }
-  }
-
-  if (problematic_files.empty()) {
-    std::cout << "✓ Internal hierarchy     : all correct\n";
-    return true;
-  }
-
-  std::cout << "✗ Found " << problematic_files.size() << " archive(s) with incorrect structure\n";
-  for (const auto &[archive, detected] : problematic_files) {
-    std::cout << "  " << archive << "\n";
-    std::cout << "    Detected: " << detected << "\n";
-  }
-  std::cout << "\n";
-  std::cout << "  Expected: YYYYMMDD/asset_code/*.csv\n";
-  std::cout << "  Example: 20240925/000001.SZ/行情.csv\n";
-  std::cout << "\n";
-  std::cout << "  Fix: Run py/app/FileRepair/fix_archive_structure.py\n";
-  return false;
-}
 
 // ============================================================================
-// CHECK 0: ARCHIVE PATH AND NAMING
+// UNIFIED ARCHIVE VALIDATION
 // ============================================================================
 
-bool is_valid_number_string(const std::string &str, size_t expected_len) {
-  if (str.length() != expected_len)
-    return false;
-  for (char c : str) {
-    if (!std::isdigit(c))
-      return false;
-  }
-  return true;
-}
+ArchiveCheckResult validate_archive_structure(const std::string &archive_base_dir) {
+  ArchiveCheckResult result;
+  result.is_valid = true;
 
-bool check_archive_naming(const std::string &archive_base_dir) {
-  if (!std::filesystem::exists(archive_base_dir)) {
-    std::cout << "✗ Archive base directory does not exist: " << archive_base_dir << "\n";
-    return false;
-  }
-
-  std::vector<std::string> problems;
-  int valid_count = 0;
-
+  // Single pass through directory structure
   // Expected structure: archive_base/YYYY/YYYYMM/YYYYMMDD.rar
   for (const auto &year_entry : std::filesystem::directory_iterator(archive_base_dir)) {
     if (!year_entry.is_directory()) {
-      problems.push_back("Non-directory in base: " + year_entry.path().filename().string());
+      result.errors.naming_errors.push_back("Non-directory in base: " + year_entry.path().filename().string());
+      result.is_valid = false;
       continue;
     }
 
     std::string year_name = year_entry.path().filename().string();
     if (!is_valid_number_string(year_name, 4)) {
-      problems.push_back("Invalid year directory: " + year_name + " (expected YYYY)");
+      result.errors.naming_errors.push_back("Invalid year directory: " + year_name + " (expected YYYY)");
+      result.is_valid = false;
       continue;
     }
 
     for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path())) {
       if (!month_entry.is_directory()) {
-        problems.push_back("Non-directory in " + year_name + ": " + month_entry.path().filename().string());
+        result.errors.naming_errors.push_back("Non-directory in " + year_name + ": " + month_entry.path().filename().string());
+        result.is_valid = false;
         continue;
       }
 
       std::string month_name = month_entry.path().filename().string();
       if (!is_valid_number_string(month_name, 6)) {
-        problems.push_back("Invalid month directory: " + year_name + "/" + month_name + " (expected YYYYMM)");
+        result.errors.naming_errors.push_back("Invalid month directory: " + year_name + "/" + month_name + " (expected YYYYMM)");
+        result.is_valid = false;
         continue;
       }
 
       // Check month directory name matches year
       if (month_name.substr(0, 4) != year_name) {
-        problems.push_back("Month directory mismatch: " + year_name + "/" + month_name);
+        result.errors.naming_errors.push_back("Month directory mismatch: " + year_name + "/" + month_name);
+        result.is_valid = false;
         continue;
       }
 
       for (const auto &file_entry : std::filesystem::directory_iterator(month_entry.path())) {
         if (!file_entry.is_regular_file()) {
-          problems.push_back("Non-file in " + year_name + "/" + month_name + ": " + file_entry.path().filename().string());
+          result.errors.naming_errors.push_back("Non-file in " + year_name + "/" + month_name + ": " + file_entry.path().filename().string());
+          result.is_valid = false;
           continue;
         }
 
         std::string filename = file_entry.path().filename().string();
-        
+        std::string filepath = file_entry.path().string();
+
         // Check file extension
+        if (filename.ends_with(".zip")) {
+          result.errors.zip_files.push_back(year_name + "/" + month_name + "/" + filename);
+          result.is_valid = false;
+          continue;
+        }
+
         if (!filename.ends_with(".rar")) {
           std::string ext = filename.substr(filename.find_last_of('.'));
-          problems.push_back("Invalid file extension: " + year_name + "/" + month_name + "/" + filename + " (found " + ext + ", expected .rar)");
+          result.errors.naming_errors.push_back("Invalid file extension: " + year_name + "/" + month_name + "/" + filename + " (found " + ext + ", expected .rar)");
+          result.is_valid = false;
           continue;
         }
 
         // Check filename format (YYYYMMDD.rar)
         std::string stem = filename.substr(0, filename.length() - 4);
         if (!is_valid_number_string(stem, 8)) {
-          problems.push_back("Invalid filename: " + year_name + "/" + month_name + "/" + filename + " (expected YYYYMMDD.rar)");
+          result.errors.naming_errors.push_back("Invalid filename: " + year_name + "/" + month_name + "/" + filename + " (expected YYYYMMDD.rar)");
+          result.is_valid = false;
           continue;
         }
 
         // Check filename matches parent directories
         if (stem.substr(0, 4) != year_name || stem.substr(0, 6) != month_name) {
-          problems.push_back("Filename path mismatch: " + year_name + "/" + month_name + "/" + filename);
+          result.errors.naming_errors.push_back("Filename path mismatch: " + year_name + "/" + month_name + "/" + filename);
+          result.is_valid = false;
           continue;
         }
 
-        valid_count++;
-      }
-    }
-  }
+        // All naming checks passed, now check format and structure
+        bool is_valid_archive = true;
 
-  if (problems.empty()) {
-    std::cout << "✓ Archive naming         : all " << valid_count << " correct\n";
-    return true;
-  }
+        // Check format: 7z disguised as rar
+        if (detect_7z_format(filepath)) {
+          result.errors.format_errors.push_back(filepath + " (7z disguised as .rar)");
+          is_valid_archive = false;
+        }
 
-  std::cout << "✗ Found " << problems.size() << " naming/path problem(s)\n";
-  
-  // Count .zip files
-  int zip_count = 0;
-  for (const auto &problem : problems) {
-    std::cout << "  " << problem << "\n";
-    if (problem.find(".zip") != std::string::npos) {
-      zip_count++;
-    }
-  }
-  
-  std::cout << "\n";
-  std::cout << "  Expected structure: YYYY/YYYYMM/YYYYMMDD.rar\n";
-  std::cout << "  Example: 2024/202411/20241119.rar\n";
-  
-  if (zip_count > 0) {
-    std::cout << "\n";
-    std::cout << "  Fix .zip files: Run py/app/FileRepair/fix_zip_to_rar.py\n";
-  }
-  
-  return false;
-}
+        // Check format: solid RAR
+        if (detect_solid_rar(filepath)) {
+          result.errors.format_errors.push_back(filepath + " (solid RAR)");
+          is_valid_archive = false;
+        }
 
-std::vector<std::string> scan_all_archives(const std::string &archive_base_dir) {
-  std::vector<std::string> all_archives;
+        // Check internal structure
+        auto structure_result = check_single_archive_structure(filepath);
+        if (!structure_result.first) {
+          result.errors.structure_errors.push_back(filepath + " - " + structure_result.second);
+          is_valid_archive = false;
+        }
 
-  if (!std::filesystem::exists(archive_base_dir)) {
-    return all_archives;
-  }
-
-  // Archive structure: archive_base/YYYY/YYYYMM/YYYYMMDD.rar
-  for (const auto &year_entry : std::filesystem::directory_iterator(archive_base_dir)) {
-    if (!year_entry.is_directory())
-      continue;
-
-    for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path())) {
-      if (!month_entry.is_directory())
-        continue;
-
-      for (const auto &file_entry : std::filesystem::directory_iterator(month_entry.path())) {
-        if (!file_entry.is_regular_file())
-          continue;
-
-        const std::string filepath = file_entry.path().string();
-        if (filepath.ends_with(".rar")) {
-          all_archives.push_back(filepath);
+        if (is_valid_archive) {
+          result.valid_archives.push_back(filepath);
+        } else {
+          result.is_valid = false;
         }
       }
     }
   }
 
-  return all_archives;
+  return result;
 }
+
 
 } // anonymous namespace
 
@@ -370,42 +303,93 @@ std::vector<std::string> scan_all_archives(const std::string &archive_base_dir) 
 // ============================================================================
 
 bool check_src_archives(const std::string &archive_base_dir) {
-  std::cout << "=== Archive Validation (comment to skip) ===" << "\n\n";
+
+  // Check if path exists, return ok if not
+  if (!std::filesystem::exists(archive_base_dir)) {
+    std::cout << "✗ Archive base directory does not exist, use built binaries ...: " << archive_base_dir << "\n\n";
+    return true;
+  }
+  std::cout << "✓ Archive base directory does exist, continue checking ...: " << archive_base_dir << "\n\n";
+
+  std::cout << "=== Archive Validation ===" << "\n\n";
 
   bool ok = true;
 
   // Check 1: Required commands
   bool cmd_ok = check_required_commands();
   ok = cmd_ok && ok;
-  std::cout << "\n";
 
   // Only continue if commands are available
   if (!cmd_ok) {
     return false;
   }
 
-  // Check 2: Archive naming and paths
-  bool naming_ok = check_archive_naming(archive_base_dir);
-  ok = naming_ok && ok;
-  std::cout << "\n";
+  // Unified validation: naming, format, and structure checks in single pass
+  ArchiveCheckResult result = validate_archive_structure(archive_base_dir);
 
-  // Continue checking even if naming has issues
-  std::vector<std::string> all_archives = scan_all_archives(archive_base_dir);
+  // Report naming errors
+  if (!result.errors.naming_errors.empty()) {
+    std::cout << "✗ Archive naming         : " << result.errors.naming_errors.size() << " problem(s) found\n";
+    for (const auto &error : result.errors.naming_errors) {
+      std::cout << "  " << error << "\n";
+    }
+    std::cout << "\n";
+    std::cout << "  Expected structure: YYYY/YYYYMM/YYYYMMDD.rar\n";
+    std::cout << "  Example: 2024/202411/20241119.rar\n";
+    std::cout << "\n";
+    ok = false;
+  } else {
+    std::cout << "✓ Archive naming         : all correct (YYYY/YYYYMM/YYYYMMDD.rar)\n";
+  }
 
-  // Check 3: Archive format (7z and solid RAR)
-  bool format_ok = check_archive_format(all_archives);
-  ok = format_ok && ok;
-  std::cout << "\n";
+  // Report format errors
+  if (!result.errors.format_errors.empty()) {
+    std::cout << "✗ Archive format         : " << result.errors.format_errors.size() << " problem(s) found\n";
+    for (const auto &error : result.errors.format_errors) {
+      std::cout << "  " << error << "\n";
+    }
+    std::cout << "\n";
+    std::cout << "  Fix: Run py/app/FileRepair/fix_7z_to_rar.py or fix_solid_to_nonsolid.py\n";
+    std::cout << "\n";
+    ok = false;
+  } else {
+    std::cout << "✓ Archive format         : all correct (RAR non-solid)\n";
+  }
 
-  // Check 4: Archive internal structure
-  bool structure_ok = check_incompatible_structure(all_archives);
-  ok = structure_ok && ok;
-  std::cout << "\n";
+  // Report structure errors
+  if (!result.errors.structure_errors.empty()) {
+    std::cout << "✗ Internal hierarchy     : " << result.errors.structure_errors.size() << " problem(s) found\n";
+    for (const auto &error : result.errors.structure_errors) {
+      std::cout << "  " << error << "\n";
+    }
+    std::cout << "\n";
+    std::cout << "  Expected: YYYYMMDD/asset_code/*.csv\n";
+    std::cout << "  Example: 20240925/000001.SZ/行情.csv\n";
+    std::cout << "\n";
+    std::cout << "  Fix: Run py/app/FileRepair/fix_archive_structure.py\n";
+    std::cout << "\n";
+    ok = false;
+  } else {
+    std::cout << "✓ Internal hierarchy     : all correct (YYYYMMDD/asset_code/*.csv)\n";
+  }
+
+  // Report zip files separately
+  if (!result.errors.zip_files.empty()) {
+    std::cout << "✗ Found .zip files       : " << result.errors.zip_files.size() << " file(s) need conversion\n";
+    for (const auto &zip_file : result.errors.zip_files) {
+      std::cout << "  " << zip_file << "\n";
+    }
+    std::cout << "\n";
+    std::cout << "  Fix .zip files: Run py/app/FileRepair/fix_zip_to_rar.py\n";
+    std::cout << "\n";
+    ok = false;
+  }
 
   // Summary
+  std::cout << "\n";
   if (ok) {
     std::cout << "========================================\n";
-    std::cout << "✓ All checks passed\n";
+    std::cout << "✓ All checks passed (" << result.valid_archives.size() << " valid archives)\n";
     std::cout << "========================================\n";
   } else {
     std::cout << "========================================\n";
