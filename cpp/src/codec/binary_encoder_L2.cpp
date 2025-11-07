@@ -746,11 +746,12 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
 
   if (!all_orders.empty()) {
     // Validate order count
-    constexpr size_t MIN_EXPECTED_COUNT = 100;
+    constexpr size_t MIN_EXPECTED_COUNT = 500;
     if (all_orders.size() < MIN_EXPECTED_COUNT) {
       Logger::log_encode("Abnormal order count: " + stock_code + " " + stock_dir +
                          " has only " + std::to_string(all_orders.size()) + " orders");
-      std::exit(1);
+      // std::exit(1);
+      return false;
     }
 
     if (out_orders)
