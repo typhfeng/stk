@@ -208,7 +208,6 @@ private:
     if (!free_slot) {
       free_slot = find_finished_tensor();
       if (free_slot) {
-        std::cout << "Flushing tensor: " << free_slot->date << " -> " << date << "\n";
         flush_tensor(free_slot);
         date_map_.erase(free_slot->date);
         free_slot->reset();
@@ -347,7 +346,6 @@ public:
     if (it != date_map_.end()) {
       auto* day = it->second;
       day->cs_done.store(true, std::memory_order_release);
-      std::cout << "CS complete: " << date << " (tensor ready for flush)\n";
     }
   }
   
@@ -359,13 +357,15 @@ public:
   // Flush all remaining tensors (called at end)
   void flush_all() {
     std::unique_lock lock(map_mutex_);
+    size_t flushed_count = 0;
     for (size_t i = 0; i < pool_size_; ++i) {
       if (tensor_pool_[i]->in_use) {
-        std::cout << "Final flush: " << tensor_pool_[i]->date << "\n";
         flush_tensor(tensor_pool_[i]);
+        ++flushed_count;
       }
     }
     date_map_.clear();
+    std::cout << "Flushed " << flushed_count << " tensors to disk\n";
   }
 };
 
