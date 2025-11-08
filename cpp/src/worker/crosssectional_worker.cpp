@@ -10,6 +10,7 @@
 
 void crosssectional_worker(const SharedState& state,
                           GlobalFeatureStore* feature_store,
+                          int worker_id,
                           misc::ProgressHandle progress_handle) {
   
   const size_t total_dates = state.all_dates.size();
@@ -23,8 +24,8 @@ void crosssectional_worker(const SharedState& state,
     
     // Update progress label
     char label_buf[128];
-    snprintf(label_buf, sizeof(label_buf), "截面核心  : %3zu/%3zu 日期: %s",
-             date_idx + 1, total_dates, date_str.c_str());
+    snprintf(label_buf, sizeof(label_buf), "截面核心%2d: %3zu/%3zu 日期: %s",
+             worker_id, date_idx + 1, total_dates, date_str.c_str());
     progress_handle.set_label(label_buf);
     
     // Process each time slot as it becomes ready
@@ -55,8 +56,8 @@ void crosssectional_worker(const SharedState& state,
   
   // Final update
   char label_buf[128];
-  snprintf(label_buf, sizeof(label_buf), "截面核心  : %3zu/%3zu 日期: Complete",
-           total_dates, total_dates);
+  snprintf(label_buf, sizeof(label_buf), "截面核心%2d: %3zu/%3zu 日期: Complete",
+           worker_id, total_dates, total_dates);
   progress_handle.set_label(label_buf);
   progress_handle.update(total_dates, total_dates, "");
 }

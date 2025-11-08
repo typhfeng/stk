@@ -11,6 +11,7 @@ class GlobalFeatureStore;
 // ============================================================================
 
 void crosssectional_worker(const SharedState& state,
-                          GlobalFeatureStore* feature_store,
-                          misc::ProgressHandle progress_handle);
+                           GlobalFeatureStore* feature_store,
+                           int worker_id,
+                           misc::ProgressHandle progress_handle);
 

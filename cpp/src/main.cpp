@@ -229,7 +229,7 @@ int main() {
 
     for (unsigned int i = 0; i < num_workers; ++i) {
       encoding_workers.push_back(
-          std::async(std::launch::async, encoding_worker, std::ref(state), std::ref(asset_id_queue), std::ref(queue_mutex), std::cref(l2_archive_base), std::cref(database_dir), i, encoding_progress->acquire_slot("")));
+          std::async(std::launch::async, encoding_worker, std::ref(state), std::ref(asset_id_queue), std::ref(queue_mutex), std::cref(l2_archive_base), std::cref(database_dir), i, encoding_progress->get_handle(static_cast<int>(i))));
     }
 
     for (auto &worker : encoding_workers) {
@@ -286,7 +286,7 @@ int main() {
         if (misc::Affinity::supported()) {
           misc::Affinity::pin_to_core(i);
         }
-        sequential_worker(state, static_cast<int>(i), &feature_store, analysis_progress->acquire_slot(""));
+        sequential_worker(state, static_cast<int>(i), &feature_store, analysis_progress->get_handle(static_cast<int>(i)));
       }));
     }
 
@@ -295,7 +295,7 @@ int main() {
       if (misc::Affinity::supported()) {
         misc::Affinity::pin_to_core(num_ts_workers);
       }
-      crosssectional_worker(state, &feature_store, analysis_progress->acquire_slot(""));
+      crosssectional_worker(state, &feature_store, static_cast<int>(num_ts_workers), analysis_progress->get_handle(static_cast<int>(num_ts_workers)));
     }));
 
     // Wait for all workers

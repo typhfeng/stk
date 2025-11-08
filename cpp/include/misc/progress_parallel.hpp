@@ -5,7 +5,6 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -16,48 +15,38 @@ namespace misc {
 // Forward declaration
 class ParallelProgress;
 
-// Worker handle: lightweight, auto-releasing (RAII)
-// Each worker thread gets one handle and simply calls update()
-// Handle automatically releases slot when destroyed
+// Worker handle: lightweight handle for updating progress
+// Each worker thread gets one handle bound to a fixed slot index
 class ProgressHandle {
 public:
-  ProgressHandle() : progress_(nullptr), worker_id_(-1), auto_release_(false) {}
+  ProgressHandle() : progress_(nullptr), worker_id_(-1) {}
 
-  // Move constructor (transfer ownership)
+  // Move constructor
   ProgressHandle(ProgressHandle &&other) noexcept
-      : progress_(other.progress_), worker_id_(other.worker_id_), auto_release_(other.auto_release_) {
+      : progress_(other.progress_), worker_id_(other.worker_id_) {
     other.progress_ = nullptr;
     other.worker_id_ = -1;
-    other.auto_release_ = false;
   }
 
   // Move assignment
   ProgressHandle &operator=(ProgressHandle &&other) noexcept {
     if (this != &other) {
-      release();
       progress_ = other.progress_;
       worker_id_ = other.worker_id_;
-      auto_release_ = other.auto_release_;
       other.progress_ = nullptr;
       other.worker_id_ = -1;
-      other.auto_release_ = false;
     }
     return *this;
-  }
-
-  // Destructor: auto-release slot
-  ~ProgressHandle() {
-    release();
   }
 
   // Delete copy (move-only)
   ProgressHandle(const ProgressHandle &) = delete;
   ProgressHandle &operator=(const ProgressHandle &) = delete;
 
-  // Update progress (fast, lock-free) - defined after ParallelProgress
+  // Update progress (fast, lock-free)
   void update(size_t current, size_t total, const std::string &msg = "") const;
 
-  // Set label (e.g., asset code) - defined after ParallelProgress
+  // Set label (e.g., asset code)
   void set_label(const std::string &label) const;
 
   // Check if handle is valid
@@ -65,20 +54,17 @@ public:
 
 private:
   friend class ParallelProgress;
-  ProgressHandle(ParallelProgress *progress, int worker_id, bool auto_release)
-      : progress_(progress), worker_id_(worker_id), auto_release_(auto_release) {}
-
-  void release();  // Defined after ParallelProgress
+  ProgressHandle(ParallelProgress *progress, int worker_id)
+      : progress_(progress), worker_id_(worker_id) {}
 
   ParallelProgress *progress_;
   int worker_id_;
-  bool auto_release_;
 };
 
 // Parallel progress tracker: manages all worker progress displays
 // Usage:
 //   auto tracker = std::make_shared<ParallelProgress>(num_workers);
-//   auto handle = tracker->acquire_slot();  // Get handle for worker
+//   auto handle = tracker->get_handle(worker_id);  // Get handle for specific slot
 //   handle.update(i, total, "processing...");  // Worker updates progress
 class ParallelProgress : public std::enable_shared_from_this<ParallelProgress> {
 private:
@@ -87,7 +73,6 @@ private:
     std::atomic<size_t> current{0};
     std::atomic<size_t> total{0};
     std::atomic<bool> dirty{false};
-    std::atomic<bool> active{false};  // Slot is in use
     char label[64] = {0};
     char message[96] = {0};
   };
@@ -116,31 +101,9 @@ public:
     stop();
   }
 
-  // Acquire a worker slot (returns RAII handle that auto-releases)
-  ProgressHandle acquire_slot(const std::string &label = "") {
-    std::lock_guard<std::mutex> lock(slot_mutex_);
-
-    for (int i = 0; i < num_workers_; ++i) {
-      bool expected = false;
-      if (slots_[i].active.compare_exchange_strong(expected, true)) {
-        ProgressHandle handle(this, i, true);  // auto_release = true
-        if (!label.empty()) {
-          handle.set_label(label);
-        }
-        return handle;
-      }
-    }
-
-    // No available slot (shouldn't happen if used correctly)
-    return ProgressHandle();
-  }
-
-  // Release a worker slot (optional, handle can be dropped)
-  void release_slot(int worker_id) {
-    if (worker_id >= 0 && worker_id < num_workers_) {
-      slots_[worker_id].active.store(false, std::memory_order_release);
-      slots_[worker_id].dirty.store(true, std::memory_order_release);
-    }
+  // Get handle for specific worker slot (no acquisition, just direct binding)
+  ProgressHandle get_handle(int worker_id) {
+    return ProgressHandle(this, worker_id);
   }
 
   // Stop refresh thread and finalize display
@@ -201,7 +164,6 @@ private:
 
       size_t current = slot.current.load(std::memory_order_relaxed);
       size_t total = slot.total.load(std::memory_order_relaxed);
-      bool active = slot.active.load(std::memory_order_relaxed);
 
       // Move cursor to target line
       int lines_up = num_workers_ - i;
@@ -215,7 +177,7 @@ private:
       for (int j = 0; j < bar_width_; ++j) {
         if (j < filled)
           buffer << "=";
-        else if (j == filled && active && current < total)
+        else if (j == filled && current < total)
           buffer << ">";
         else
           buffer << " ";
@@ -244,7 +206,6 @@ private:
   std::vector<WorkerSlot> slots_;
   std::atomic<bool> running_;
   bool initialized_;
-  std::mutex slot_mutex_;
   std::thread refresh_thread_;
 };
 
@@ -258,12 +219,6 @@ inline void ProgressHandle::update(size_t current, size_t total, const std::stri
 inline void ProgressHandle::set_label(const std::string &label) const {
   if (progress_ && worker_id_ >= 0) {
     progress_->set_label_internal(worker_id_, label);
-  }
-}
-
-inline void ProgressHandle::release() {
-  if (auto_release_ && progress_ && worker_id_ >= 0) {
-    progress_->release_slot(worker_id_);
   }
 }
 

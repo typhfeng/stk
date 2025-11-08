@@ -48,8 +48,7 @@ public:
         minute_sequential_(&minute_bar_),
         hour_sequential_(&hour_bar_),
         feature_store_(feature_store),
-        asset_id_(asset_id),
-        core_id_(core_id) {
+        asset_id_(asset_id) {
     if (feature_store_) {
       tick_sequential_.set_store_context(feature_store_, asset_id_);
       minute_sequential_.set_store_context(feature_store_, asset_id_);
@@ -201,6 +200,5 @@ private:
   BarAccumulator hour_accumulator_;
   double prev_day_close_ = 0;
   
-  size_t core_id_ = 0;
 };
 

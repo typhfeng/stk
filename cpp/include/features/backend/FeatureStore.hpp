@@ -18,8 +18,8 @@
 // ============================================================================
 // Control tensor flush strategy:
 // - true:  Flush unified daily tensor [T_L0, F_total, A] (GPU-friendly, single file)
-// - false: Flush separate level tensors [T_L0, F0, A], [T_L1, F1, A], [T_L2, F2, A] + parent_link metadata
-#define STORE_UNIFIED_DAILY_TENSOR true
+// - false: Flush separate level tensors [T_L0, F0, A], [T_L1, F1, A], [T_L2, F2, A]
+#define STORE_UNIFIED_DAILY_TENSOR false
 
 // ============================================================================
 // FEATURE STORE - Single class interface
@@ -313,12 +313,26 @@ public:
     }
 
     size_t bytes_per_day = 0;
+    size_t bytes_per_level[LEVEL_COUNT] = {0};
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-      bytes_per_day += MAX_ROWS_PER_LEVEL[lvl] * num_assets * FIELDS_PER_LEVEL[lvl] * sizeof(float);
+      bytes_per_level[lvl] = MAX_ROWS_PER_LEVEL[lvl] * num_assets * FIELDS_PER_LEVEL[lvl] * sizeof(feature_storage_t);
+      bytes_per_day += bytes_per_level[lvl];
     }
     
     std::cout << "Feature Store Tensor Pool:\n";
     std::cout << "  Pool size: " << pool_size << " tensors\n";
+#if STORE_UNIFIED_DAILY_TENSOR
+    std::cout << "  Storage mode: Unified daily tensor\n";
+#else
+    std::cout << "  Storage mode: Separate-level daily tensors\n";
+#endif
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+      std::cout << "  L" << lvl << ": "
+                << MAX_ROWS_PER_LEVEL[lvl] << "×"
+                << FIELDS_PER_LEVEL[lvl] << "×"
+                << num_assets << " -> "
+                << (bytes_per_level[lvl] / (1024.0 * 1024.0)) << " MB\n";
+    }
     std::cout << "  Per tensor: " << (bytes_per_day / (1024.0 * 1024.0)) << " MB\n";
     std::cout << "  Total memory: " << (bytes_per_day * pool_size / (1024.0 * 1024.0 * 1024.0)) << " GB\n";
     
