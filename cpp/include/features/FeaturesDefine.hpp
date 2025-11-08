@@ -30,7 +30,7 @@
 // - CS_read:  在每个时刻t, 对每个feature f, 连续读取所有A个assets的值(截面计算)
 // - CS_write: 在每个时刻t, 对每个feature f, 连续写入所有A个assets的值(截面结果)
 //
-// 布局          地址公式               TS_write(39%)      CS_read(45%)      CS_write(16%)     加权总分  推荐度
+// 布局          地址公式               TS_write(39%)      CS_read(45%)      CS_write(16%)   加权总分   推荐度
 // [T][A][F]    (t*A+a)*F+f            连续/100分         跳4KB/60分        跳4KB/60分        75.6      良好
 // [T][F][A]    (t*F+f)*A+a            跳4KB/60分         连续/100分        连续/100分        84.4      最优 √√√
 // [A][T][F]    (a*T+t)*F+f            连续/100分         跳400MB/5分       跳400MB/5分       42.0      较差
@@ -39,10 +39,10 @@
 // [F][A][T]    (f*A+a)*T+t            跳400MB/5分        跳400KB/20分      跳400KB/20分      14.2      极差
 //
 // stride=4B:连续访问(SIMD/prefetch)优化; 
-// stride=64B: cache line访问优化; 
+// stride=64B: cache line访问优化;
+// stride<4KB: TLB/Page优化; 
 // stride<32KB: L1访问优化; 
 // stride<1MB: L2访问优化; 
-// stride<2MB: TLB/Page优化; 
 
 // ============================================================================
 // FEATURE METADATA ENCODING SYSTEM
@@ -115,7 +115,7 @@ enum class NormMethod : uint8_t {
   X(market_mid_price,     "市场基准价格",       "Market Mid Price",           OT, META,           BENCHMARK,  NONE,      "benchmark_instrument_mid_price",                            "市场基准合约的mid价格，用于计算beta和相对表现")
 
 // ============================================================================
-// LEVEL 1: Minute-level Features (聚合分钟条, 窗口: 5/15/60 minutes)
+// LEVEL 1: Minute-level Features (聚合分钟条, 窗口: 1/5/15/60 minutes)
 // ============================================================================
 
 #define LEVEL_1_FIELDS(X) \
@@ -133,7 +133,7 @@ enum class NormMethod : uint8_t {
   X(market_return,        "市场收益",           "Market Return",              OT, META,           BENCHMARK,  NONE,      "log(market_close_t/market_close_{t-1})",                    "市场基准收益率，用于计算beta和相对表现")
 
 // ============================================================================
-// LEVEL 2: Hour-level Features (小时级, 窗口: 3h/6h/24h)
+// LEVEL 2: Hour-level Features (小时级, 窗口: 1h/3h/6h/24h)
 // ============================================================================
 
 #define LEVEL_2_FIELDS(X) \
