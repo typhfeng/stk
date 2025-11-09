@@ -21,6 +21,8 @@ APP_NAME = "main"                              # C++ project name
 CPUPROFILE_FREQUENCY = 1000000                 # Profiler sampling rate (Hz)
 PROFILER_LIB = '/usr/lib/x86_64-linux-gnu/libprofiler.so.0'
 
+os.environ["STK_INPUT_DIR"] = "/mnt/data"
+
 # Profiler report settings
 TARGET_NAMESPACE = "Analysis"            # Focus namespace
 PPROF_PORT = 8080                              # Web GUI port
@@ -36,7 +38,7 @@ def _cleanup_background_processes():
 
     for pattern in processes_to_kill:
         subprocess.run(["pkill", "-9", "-f", pattern],
-                       capture_output=True, check=False)
+                       capture_output=True,env=os.environ, check=False)
 
     time.sleep(0.3)
 
