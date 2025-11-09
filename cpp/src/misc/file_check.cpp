@@ -200,6 +200,9 @@ ArchiveCheckResult validate_archive_structure(const std::string &archive_base_di
       result.is_valid = false;
       continue;
     }
+    std::cout << "\n";
+    std::cout << "  ArchiveCheckResult year string ok\n";
+    std::cout << "\n";
 
     for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path())) {
       if (!month_entry.is_directory()) {
@@ -207,6 +210,9 @@ ArchiveCheckResult validate_archive_structure(const std::string &archive_base_di
         result.is_valid = false;
         continue;
       }
+      std::cout << "\n";
+      std::cout << "  ArchiveCheckResult month 1 string ok\n";
+      std::cout << "\n";
 
       std::string month_name = month_entry.path().filename().string();
       if (!is_valid_number_string(month_name, 6)) {
@@ -214,6 +220,9 @@ ArchiveCheckResult validate_archive_structure(const std::string &archive_base_di
         result.is_valid = false;
         continue;
       }
+      std::cout << "\n";
+      std::cout << "  ArchiveCheckResult month 2 string ok\n";
+      std::cout << "\n";
 
       // Check month directory name matches year
       if (month_name.substr(0, 4) != year_name) {
@@ -221,16 +230,36 @@ ArchiveCheckResult validate_archive_structure(const std::string &archive_base_di
         result.is_valid = false;
         continue;
       }
+      
+      std::cout << "\n";
+      std::cout << "  ArchiveCheckResult month 3 string ok\n";
+      std::cout << month_entry.path();
+      std::cout << "\n";
 
       for (const auto &file_entry : std::filesystem::directory_iterator(month_entry.path())) {
+        std::string filename = file_entry.path().filename().string();
+        std::string filepath = file_entry.path().string();
+
+        // Skip macOS resource-fork and other hidden files (._* , .DS_Store, .*)
+        if (!filename.empty() && (filename.rfind("._", 0) == 0 || filename == ".DS_Store" || filename.front() == '.')) {
+          std::cout << "  [skip] hidden / macOS resource file: " << filename << "\n";
+          std::cout.flush();
+          continue;
+        }
+
+        std::cout << "\n";
+        std::cout << "  ArchiveCheckResult directory iterator string start\n";
+        std::cout << "\n";
+
         if (!file_entry.is_regular_file()) {
           result.errors.naming_errors.push_back("Non-file in " + year_name + "/" + month_name + ": " + file_entry.path().filename().string());
           result.is_valid = false;
           continue;
         }
 
-        std::string filename = file_entry.path().filename().string();
-        std::string filepath = file_entry.path().string();
+        std::cout << "\n";
+        std::cout << "  filename and filepath is " << filename << "  " << filepath << "\n";
+        std::cout.flush();
 
         // Check file extension
         if (filename.ends_with(".zip")) {
@@ -260,6 +289,10 @@ ArchiveCheckResult validate_archive_structure(const std::string &archive_base_di
           result.is_valid = false;
           continue;
         }
+
+        std::cout << "\n";
+        std::cout << "  ArchiveCheckResult month string ok\n";
+        std::cout << "\n";
 
         // All naming checks passed, now check format and structure
         bool is_valid_archive = true;

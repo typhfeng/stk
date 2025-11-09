@@ -155,6 +155,7 @@ int main() {
     // ========================================================================
     // STAGE 0: ARCHIVE FORMAT VALIDATION AND CONVERSION
     // ========================================================================
+    std::cout << "=== Phase 0: check src_archives ===" << "\n";
     if (!FileCheck::check_src_archives(l2_archive_base)) {
       return 1;
     }
