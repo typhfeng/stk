@@ -1,2 +1,4 @@
+fork	git@github.com:typhfeng/stk.git (fetch)
+fork	git@github.com:typhfeng/stk.git (push)
 origin	git@github.com:CoCoMilkyWay/stk.git (fetch)
 origin	git@github.com:CoCoMilkyWay/stk.git (push)

@@ -1,122 +1,30 @@
-diff --git a/cpp/include/math/stationary/IntDiff.hpp b/cpp/include/math/stationary/IntDiff.hpp
-index 5ec4cc4..143a017 100644
---- a/cpp/include/math/stationary/IntDiff.hpp
-+++ b/cpp/include/math/stationary/IntDiff.hpp
-@@ -25,6 +25,10 @@
- 
- namespace math::stationary {
- 
-+// forward declaration so templated `compute` can call it before the
-+// full definition appears later in this header.
-+inline void int_diff(std::span<const float> in, std::span<float> out, int order);
-+
- struct IntDiff {
-   static constexpr ParamMeta meta[] = {{"阶数", 1, 1, 3}};
-   static constexpr OperatorDef def = {"整数差分", meta, 1};
-diff --git a/cpp/include/math/stationary/MADetrend.hpp b/cpp/include/math/stationary/MADetrend.hpp
-index 0c0c9d4..3cee6cb 100644
---- a/cpp/include/math/stationary/MADetrend.hpp
-+++ b/cpp/include/math/stationary/MADetrend.hpp
-@@ -21,6 +21,10 @@
- 
- namespace math::stationary {
- 
-+// forward declaration so templated `compute` can call it before the
-+// full definition appears later in this header.
-+inline void ma_detrend(std::span<const float> in, std::span<float> out, int window);
-+
- struct MADetrend {
-   static constexpr ParamMeta meta[] = {{"窗口", 60, 10, 500}};
-   static constexpr OperatorDef def = {"MA去趋势", meta, 1};
-diff --git a/cpp/include/shared/OrderFlow.hpp b/cpp/include/shared/OrderFlow.hpp
-index b784825..55c1ccb 100644
---- a/cpp/include/shared/OrderFlow.hpp
-+++ b/cpp/include/shared/OrderFlow.hpp
-@@ -13,6 +13,7 @@
- #include <atomic>
- #include <cstdint>
- #include <limits>
-+#include <cmath>
- #include <map>
- #include <memory>
- #include <string>
-diff --git a/cpp/package/microtex/CMakeLists.txt b/cpp/package/microtex/CMakeLists.txt
-index d2a7d95..99acdd8 100644
---- a/cpp/package/microtex/CMakeLists.txt
-+++ b/cpp/package/microtex/CMakeLists.txt
-@@ -33,13 +33,22 @@ target_compile_definitions(microtex PUBLIC BUILD_IMGUI)
- # Disable Windows CRT secure warnings
- target_compile_definitions(microtex PUBLIC _CRT_SECURE_NO_WARNINGS)
- 
--# microtex needs infinity support, override /fp:fast with /fp:precise
--target_compile_options(microtex PRIVATE
--    /fp:precise
--    -Wno-tautological-constant-out-of-range-compare
--    -Wno-switch
--    -Wno-unused-result
--)
-+# microtex needs infinity support: use Windows precise float or disable fast-math on other platforms
-+if(IS_WINDOWS)
-+    target_compile_options(microtex PRIVATE
-+        /fp:precise
-+        -Wno-tautological-constant-out-of-range-compare
-+        -Wno-switch
-+        -Wno-unused-result
-+    )
-+else()
-+    target_compile_options(microtex PRIVATE
-+        -fno-fast-math
-+        -Wno-tautological-constant-out-of-range-compare
-+        -Wno-switch
-+        -Wno-unused-result
-+    )
-+endif()
- 
- # Export resource path for copying
- set(MICROTEX_RES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/res PARENT_SCOPE)
-diff --git a/cpp/package/zlib-1.3.1/libz.a b/cpp/package/zlib-1.3.1/libz.a
-index 95fcfb5..09c41f7 100644
-Binary files a/cpp/package/zlib-1.3.1/libz.a and b/cpp/package/zlib-1.3.1/libz.a differ
-diff --git a/cpp/projects/main/CMakeLists.txt b/cpp/projects/main/CMakeLists.txt
-index 3848a21..e196c3c 100644
---- a/cpp/projects/main/CMakeLists.txt
-+++ b/cpp/projects/main/CMakeLists.txt
-@@ -283,13 +283,8 @@ set(HEADERS
- 
- add_executable(app_main ${SOURCES} ${HEADERS})
- 
--# Disable fast-math for specific files to avoid infinity issues (Windows: /fp:precise, Unix: -fno-fast-math)
--if(IS_WINDOWS)
--    set(PRECISE_MATH_FLAG "/fp:precise")
--else()
--    set(PRECISE_MATH_FLAG "-fno-fast-math")
--endif()
--
-+# Disable fast-math for specific files to avoid infinity issues
-+# Use generator-expressions to apply the correct flag per platform/compiler
- set_source_files_properties(
-     ../../src/codec/json_config.cpp
-     ../../src/shared/Config.cpp
-@@ -311,7 +306,7 @@ set_source_files_properties(
-     ../../src/gui/task_features/ui/TabOrderFlow.cpp
-     ../../src/gui/task_tools/TaskTools.cpp
-     ../../src/gui/task_tools/ui/TabLatex.cpp
--    PROPERTIES COMPILE_OPTIONS "${PRECISE_MATH_FLAG}"
-+    PROPERTIES COMPILE_OPTIONS "$<$<PLATFORM_ID:Windows>:/fp:precise>$<$<NOT:$<PLATFORM_ID:Windows>>:-fno-fast-math>"
- )
- 
- # ============================================================================
-diff --git a/run.py b/run.py
-index e1c51df..159d1d1 100644
---- a/run.py
-+++ b/run.py
-@@ -59,7 +59,8 @@ def _build(app_name, enable_tsan, enable_debug, enable_profile, enable_assert):
-     env['PROFILE_MODE'] = 'ON' if enable_profile else 'OFF'
-     env['ASSERT_MODE'] = 'ON' if enable_assert else 'OFF'
- 
--    result = subprocess.run(["python", py_script], env=env)
-+    # Use the current Python interpreter to invoke the build script
-+    result = subprocess.run([sys.executable, py_script], env=env)
-     if result.returncode != 0:
-         sys.exit(1)
- 
+diff --git a/.local_changes/LOCAL_CHANGES.md b/.local_changes/LOCAL_CHANGES.md
+index b0e5d89..514aed5 100644
+--- a/.local_changes/LOCAL_CHANGES.md
++++ b/.local_changes/LOCAL_CHANGES.md
+@@ -1,3 +1,3 @@
+ Repository: /home/typhwang/work/stk
+-Branch: main
+-Timestamp: 2026-01-14T00:28:25.105408Z
++Branch: Linux
++Timestamp: 2026-01-14T18:19:24.671338Z
+diff --git a/.local_changes/git_status_before.txt b/.local_changes/git_status_before.txt
+index 1467882..0aa6777 100644
+--- a/.local_changes/git_status_before.txt
++++ b/.local_changes/git_status_before.txt
+@@ -1,11 +1,4 @@
+- M cpp/include/math/stationary/IntDiff.hpp
+- M cpp/include/math/stationary/MADetrend.hpp
+- M cpp/include/shared/OrderFlow.hpp
+- M cpp/package/microtex/CMakeLists.txt
+- M cpp/package/zlib-1.3.1/libz.a
+- M cpp/projects/main/CMakeLists.txt
+- M run.py
+-?? .github/
+-?? .local_changes/
+-?? py/update.py
+-?? update
++ M .local_changes/LOCAL_CHANGES.md
++?? .local_changes/current_branch.txt
++?? .local_changes/push_output.txt
++?? .local_changes/push_result.txt

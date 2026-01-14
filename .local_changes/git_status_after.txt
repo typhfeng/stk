@@ -1,11 +1,11 @@
- M cpp/include/math/stationary/IntDiff.hpp
- M cpp/include/math/stationary/MADetrend.hpp
- M cpp/include/shared/OrderFlow.hpp
- M cpp/package/microtex/CMakeLists.txt
- M cpp/package/zlib-1.3.1/libz.a
- M cpp/projects/main/CMakeLists.txt
- M run.py
-?? .github/
-?? .local_changes/
-?? py/update.py
-?? update
+ M .local_changes/LOCAL_CHANGES.md
+ M .local_changes/git_fetch_output.txt
+ M .local_changes/git_pull_output.txt
+ M .local_changes/git_status_before.txt
+ M .local_changes/incoming_commits_before_pull.txt
+ M .local_changes/remotes.txt
+ M .local_changes/uncommitted.patch
+ M .local_changes/untracked.txt
+?? .local_changes/current_branch.txt
+?? .local_changes/push_output.txt
+?? .local_changes/push_result.txt
