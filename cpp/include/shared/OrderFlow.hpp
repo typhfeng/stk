@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <string>

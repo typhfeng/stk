@@ -21,6 +21,10 @@
 
 namespace math::stationary {
 
+// forward declaration so templated `compute` can call it before the
+// full definition appears later in this header.
+inline void ma_detrend(std::span<const float> in, std::span<float> out, int window);
+
 struct MADetrend {
   static constexpr ParamMeta meta[] = {{"窗口", 10, 10, 500}};
   static constexpr OperatorDef def = {"MA去趋势", meta, 1};

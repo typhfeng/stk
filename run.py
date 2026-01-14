@@ -59,7 +59,8 @@ def _build(app_name, enable_tsan, enable_debug, enable_profile, enable_assert):
     env['PROFILE_MODE'] = 'ON' if enable_profile else 'OFF'
     env['ASSERT_MODE'] = 'ON' if enable_assert else 'OFF'
 
-    result = subprocess.run(["python", py_script], env=env)
+    # Use the current Python interpreter to invoke the build script
+    result = subprocess.run([sys.executable, py_script], env=env)
     if result.returncode != 0:
         sys.exit(1)
 

@@ -282,13 +282,8 @@ set(HEADERS
 
 add_executable(app_main ${SOURCES} ${HEADERS})
 
-# Disable fast-math for specific files to avoid infinity issues (Windows: /fp:precise, Unix: -fno-fast-math)
-if(IS_WINDOWS)
-    set(PRECISE_MATH_FLAG "/fp:precise")
-else()
-    set(PRECISE_MATH_FLAG "-fno-fast-math")
-endif()
-
+# Disable fast-math for specific files to avoid infinity issues
+# Use generator-expressions to apply the correct flag per platform/compiler
 set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
@@ -310,7 +305,7 @@ set_source_files_properties(
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_tools/TaskTools.cpp
     ../../src/gui/task_tools/ui/TabLatex.cpp
-    PROPERTIES COMPILE_OPTIONS "${PRECISE_MATH_FLAG}"
+    PROPERTIES COMPILE_OPTIONS "$<$<PLATFORM_ID:Windows>:/fp:precise>$<$<NOT:$<PLATFORM_ID:Windows>>:-fno-fast-math>"
 )
 
 # ============================================================================

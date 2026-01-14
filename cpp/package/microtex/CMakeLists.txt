@@ -33,13 +33,22 @@ target_compile_definitions(microtex PUBLIC BUILD_IMGUI)
 # Disable Windows CRT secure warnings
 target_compile_definitions(microtex PUBLIC _CRT_SECURE_NO_WARNINGS)
 
-# microtex needs infinity support, override /fp:fast with /fp:precise
-target_compile_options(microtex PRIVATE
-    /fp:precise
-    -Wno-tautological-constant-out-of-range-compare
-    -Wno-switch
-    -Wno-unused-result
-)
+# microtex needs infinity support: use Windows precise float or disable fast-math on other platforms
+if(IS_WINDOWS)
+    target_compile_options(microtex PRIVATE
+        /fp:precise
+        -Wno-tautological-constant-out-of-range-compare
+        -Wno-switch
+        -Wno-unused-result
+    )
+else()
+    target_compile_options(microtex PRIVATE
+        -fno-fast-math
+        -Wno-tautological-constant-out-of-range-compare
+        -Wno-switch
+        -Wno-unused-result
+    )
+endif()
 
 # Export resource path for copying
 set(MICROTEX_RES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/res PARENT_SCOPE)

@@ -1,0 +1,288 @@
+-- Build mode: ASSERT
+-- GUI Pipeline: OpenGL
+-- 
+-- === Checking GUI Dependencies ===
+-- Platform: Linux (using X11 for windowing)
+-- ✓ OpenGL found: /usr/lib/x86_64-linux-gnu/libOpenGL.so;/usr/lib/x86_64-linux-gnu/libGLX.so
+-- ✓ Windows SDK available (Win32 API)
+-- All GUI dependencies satisfied
+-- 
+-- ZSTD VERSION: 1.5.7
+-- CMAKE_INSTALL_PREFIX: /usr/local
+-- CMAKE_INSTALL_LIBDIR: lib
+-- ZSTD_LEGACY_SUPPORT defined!
+-- ZSTD_MULTITHREAD_SUPPORT is enabled
+-- Using X11 for window creation
+-- Build type: Release
+-- C++ compiler: Clang
+-- C++ standard: 23
+-- Output directory: /home/typhwang/work/stk/cpp/projects/main/build/bin
+-- Configuring done (0.3s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/typhwang/work/stk/cpp/projects/main/build
+[1/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/shared/Transform.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/shared/Transform.cpp:3:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+1 warning generated.
+[2/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/Gui.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/Gui.cpp:7:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/Gui.cpp:7:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[3/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_database/services/L2DatabaseService.cpp.o
+[4/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/Tasks.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/Tasks.cpp:8:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/Tasks.cpp:8:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[5/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/worker/encoding_worker.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/worker/encoding_worker.cpp:2:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/worker/encoding_worker.cpp:2:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[6/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/worker/crosssectional_worker.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/worker/crosssectional_worker.cpp:2:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/worker/crosssectional_worker.cpp:2:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[7/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/worker/sequential_worker.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/worker/sequential_worker.cpp:2:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/worker/sequential_worker.cpp:2:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[8/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_database/services/AssetLoader.cpp.o
+[9/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_database/services/ScanService.cpp.o
+[10/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_database/services/EncodingService.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_database/services/EncodingService.cpp:5:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_database/services/EncodingService.cpp:5:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[11/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_database/services/StateManager.cpp.o
+[12/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/services/ComputeService.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/services/ComputeService.cpp:6:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/services/ComputeService.cpp:6:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[13/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/services/DistService.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/services/DistService.cpp:4:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/services/DistService.cpp:4:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[14/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/ui/TabFeature.cpp.o
+[15/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/services/TimeSeriesService.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/services/TimeSeriesService.cpp:4:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/services/TimeSeriesService.cpp:4:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[16/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/ui/TabTimeSeries.cpp.o
+[17/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_database/TaskDatabase.cpp.o
+[18/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/ui/TabTransform.cpp.o
+[19/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/ui/TabDist.cpp.o
+[20/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_settings/TaskSettings.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_settings/TaskSettings.cpp:6:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_settings/TaskSettings.cpp:6:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[21/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_system_info/TaskSystemInfo.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_system_info/TaskSystemInfo.cpp:5:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_system_info/TaskSystemInfo.cpp:5:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[22/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_tools/TaskTools.cpp.o
+[23/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/TaskFeatures.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/TaskFeatures.cpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/gui/task_features/services/DataLoader.hpp:415:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  415 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/gui/task_features/services/DataLoader.hpp:415:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  415 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/TaskFeatures.cpp:17:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/TaskFeatures.cpp:17:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+5 warnings generated.
+[24/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/services/TransformService.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/services/TransformService.cpp:4:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/task_features/services/TransformService.cpp:14:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/src/gui/task_features/services/TransformService.cpp:524:13: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  524 |         if (std::isfinite(val)) {
+      |             ^~~~~~~~~~~~~~~~~~
+4 warnings generated.
+[25/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/Run_OpenGL.cpp.o
+In file included from /home/typhwang/work/stk/cpp/src/gui/Run_OpenGL.cpp:14:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:6:
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:13: warning: use of NaN is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |             ^~~~~~~~~~~~~~~
+/home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Dist.hpp:441:32: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  441 |         if (std::isnan(val) || std::isinf(val))
+      |                                ^~~~~~~~~~~~~~~
+In file included from /home/typhwang/work/stk/cpp/src/gui/Run_OpenGL.cpp:14:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/SharedData.hpp:11:
+In file included from /home/typhwang/work/stk/cpp/projects/main/../../include/shared/./Transform.hpp:5:
+/home/typhwang/work/stk/cpp/projects/main/../../include/math/normalize/Normalize.hpp:268:14: warning: use of infinity is undefined behavior due to the currently enabled floating-point options [-Wnan-infinity-disabled]
+  268 |     out[i] = std::isfinite(v) ? s * v : 0.0f;
+      |              ^~~~~~~~~~~~~~~~
+3 warnings generated.
+[26/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_features/ui/TabOrderFlow.cpp.o
+[27/28] Building CXX object CMakeFiles/app_main.dir/home/typhwang/work/stk/cpp/src/gui/task_database/infrastructure/DataManager.cpp.o
+[28/28] Linking CXX executable bin/app_main
+========================================
+  C++ Build Script (Linux)
+========================================
+Assert mode: ENABLED
+
+Configuring with CMake...
+
+Building...
+
+✓ compile_commands.json copied for clangd
+
+========================================
+  Build completed successfully!
+========================================
