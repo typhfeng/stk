@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Safe updater: fetch origin, autostash, rebase, preserve local changes.
+"""Updater: follow `origin/main`, discard local changes, push to `fork/Linux`.
 
 Usage:
-  python3 py/update.py [--build]
+    python3 py/update.py [--build]
 
-This script saves uncommitted work to `.local_changes/`, performs
-`git fetch` and `git pull --rebase --autostash origin <branch>`, and
-captures logs into `.local_changes/` for later inspection. With
-`--build` it will run the project's build (`python3 py/main.py`) after
+This script saves uncommitted work to `.local_changes/`, then sets the
+local branch to follow `origin/main`, discards local working-tree changes,
+rebases the current branch onto `origin/main`, and force-pushes the result
+to `fork/Linux`. All command output is captured in `.local_changes/`.
+With `--build` it will run the project's build (`python3 py/main.py`) after
 updating and save the build output.
 """
 import argparse
@@ -74,32 +75,50 @@ def main():
         capture_file='untracked.txt',
     )
 
-    # fetch
+    # record remotes and fetch
     run(['git', 'remote', '-v'], capture_file='remotes.txt')
     run(['git', 'fetch', 'origin'], capture_file='git_fetch_output.txt')
+    run(['git', 'fetch', 'fork'], capture_file='git_fetch_fork_output.txt')
+
+    # Ensure the local branch follows origin/main (best-effort)
     run(
-        ['git', 'log', '--oneline', f'HEAD..origin/{branch}'],
+        ['git', 'branch', '--set-upstream-to=origin/main', branch],
+        capture_file='set_upstream.txt',
+    )
+
+    # Save incoming commits relative to origin/main
+    run(
+        ['git', 'log', '--oneline', 'HEAD..origin/main'],
         capture_file='incoming_commits_before_pull.txt',
     )
 
-    # pull with autostash
+    # Discard local working-tree changes (we already saved them above)
+    run(['git', 'reset', '--hard'], capture_file='git_reset_output.txt')
+    run(['git', 'clean', '-fd'], capture_file='git_clean_output.txt')
+
+    # Rebase current branch onto origin/main
     rc, out = run(
-        ['git', 'pull', '--rebase', '--autostash', 'origin', branch],
-        capture_file='git_pull_output.txt',
+        ['git', 'rebase', 'origin/main'],
+        capture_file='git_rebase_output.txt',
     )
     if rc != 0:
-        print(
-            'Pull failed or conflicts occurred. '
-            'See .local_changes/git_pull_output.txt'
-        )
+        print('Rebase failed. See .local_changes/git_rebase_output.txt')
         run(
             ['git', 'status', '--porcelain=v1'],
             capture_file='git_status_after.txt',
         )
         sys.exit(1)
 
-    # record new commits
-    # note: HEAD@{1} may not exist in fresh clones; guard it
+    # Force-push the rebased branch to fork/Linux using --force-with-lease
+    rpc, rout = run(
+        ['git', 'push', '--force-with-lease', 'fork', 'HEAD:Linux'],
+        capture_file='git_push_output.txt',
+    )
+    if rpc != 0:
+        print('Push to fork failed. See .local_changes/git_push_output.txt')
+        sys.exit(1)
+
+    # record new commits (what changed in this update)
     rc2, _ = run(['git', 'rev-parse', '--verify', 'HEAD@{1}'])
     if rc2 == 0:
         run(
