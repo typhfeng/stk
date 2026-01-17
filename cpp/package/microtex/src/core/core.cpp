@@ -10,27 +10,27 @@ using namespace tex;
 #ifdef HAVE_LOG
 
 void print_box(const sptr<Box>& b, int dep, vector<bool>& lines) {
-  __print("%-4d", dep);
+  MT_PRINT("%-4d", dep);
   if (lines.size() < dep + 1) lines.resize(dep + 1, false);
 
   for (int i = 0; i < dep - 1; i++) {
     if (lines[i]) {
-      __print("    ");
+      MT_PRINT("    ");
     } else {
-      __print(" │  ");
+      MT_PRINT(" │  ");
     }
   }
 
   if (dep > 0) {
     if (lines[dep - 1]) {
-      __print(" └──");
+      MT_PRINT(" └──");
     } else {
-      __print(" ├──");
+      MT_PRINT(" ├──");
     }
   }
 
   if (b == nullptr) {
-    __print(ANSI_COLOR_RED " NULL\n");
+    MT_PRINT(ANSI_COLOR_RED " NULL\n");
     return;
   }
 
@@ -39,9 +39,9 @@ void print_box(const sptr<Box>& b, int dep, vector<bool>& lines) {
   const string& str = demangle_name(typeid(*(b)).name());
   string name = str.substr(str.find_last_of("::") + 1);
   if (c > 0) {
-    __print(ANSI_COLOR_CYAN " %s\n" ANSI_RESET, name.c_str());
+    MT_PRINT(ANSI_COLOR_CYAN " %s\n" ANSI_RESET, name.c_str());
   } else {
-    __print(" %s\n", name.c_str());
+    MT_PRINT(" %s\n", name.c_str());
   }
 
   for (size_t i = 0; i < c; i++) {
@@ -53,7 +53,7 @@ void print_box(const sptr<Box>& b, int dep, vector<bool>& lines) {
 void tex::print_box(const sptr<Box>& b) {
   vector<bool> lines;
   ::print_box(b, 0, lines);
-  __print("\n");
+  MT_PRINT("\n");
 }
 
 #endif  // HAVE_LOG
@@ -65,19 +65,19 @@ sptr<Box> BoxSplitter::split(const sptr<Box>& b, float width, float lineSpace) {
     auto box = split(h, width, lineSpace);
 #ifdef HAVE_LOG
     if (box != b) {
-      __print("[BEFORE SPLIT]:\n");
+      MT_PRINT("[BEFORE SPLIT]:\n");
       print_box(b);
-      __print("[AFTER SPLIT]:\n");
+      MT_PRINT("[AFTER SPLIT]:\n");
       print_box(box);
     } else {
-      __print("[BOX TREE]:\n");
+      MT_PRINT("[BOX TREE]:\n");
       print_box(box);
     }
 #endif
     return box;
   }
 #ifdef HAVE_LOG
-  __print("[BOX TREE]:\n");
+  MT_PRINT("[BOX TREE]:\n");
   print_box(b);
 #endif
   return b;

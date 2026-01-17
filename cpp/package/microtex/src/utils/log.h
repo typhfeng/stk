@@ -34,6 +34,6 @@
 #define __log std::cout
 #endif
 
-#define __print printf
+#define MT_PRINT printf
 
 #endif

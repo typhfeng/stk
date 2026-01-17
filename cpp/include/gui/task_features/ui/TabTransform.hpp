@@ -11,6 +11,8 @@
 //
 #pragma once
 
+#include <cstddef>
+
 struct SharedData;
 
 namespace GUI::Features {
