@@ -25,6 +25,9 @@
 
 namespace math::stationary {
 
+// 前向声明
+inline void int_diff(std::span<const float> in, std::span<float> out, int order);
+
 struct IntDiff {
   static constexpr ParamMeta meta[] = {{"阶数", 1, 1, 3}};
   static constexpr OperatorDef def = {"整数差分", meta, 1};

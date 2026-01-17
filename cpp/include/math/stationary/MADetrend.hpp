@@ -21,6 +21,9 @@
 
 namespace math::stationary {
 
+// 前向声明
+inline void ma_detrend(std::span<const float> in, std::span<float> out, int window);
+
 struct MADetrend {
   static constexpr ParamMeta meta[] = {{"窗口", 10, 10, 500}};
   static constexpr OperatorDef def = {"MA去趋势", meta, 1};
