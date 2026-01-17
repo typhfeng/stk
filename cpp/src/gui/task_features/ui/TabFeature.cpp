@@ -90,18 +90,22 @@ static const char *to_string_cn(FeatureDataType type) {
 
 static const char *to_string_cn(FeatureCategoryL1 cat) {
   switch (cat) {
-  case FeatureCategoryL1::PRICE:
-    return "价格";
-  case FeatureCategoryL1::VOLUME:
-    return "量能";
+  case FeatureCategoryL1::IMBALANCE:
+    return "失衡";
+  case FeatureCategoryL1::SHAPE:
+    return "形状";
+  case FeatureCategoryL1::ORDER_FLOW:
+    return "订单流";
+  case FeatureCategoryL1::BEHAVIORAL:
+    return "行为";
+  case FeatureCategoryL1::RESILIENCE:
+    return "韧性";
+  case FeatureCategoryL1::LIQUIDITY:
+    return "流动性";
   case FeatureCategoryL1::VOLATILITY:
     return "波动率";
   case FeatureCategoryL1::MOMENTUM:
     return "动量";
-  case FeatureCategoryL1::LIQUIDITY:
-    return "流动性";
-  case FeatureCategoryL1::IMBALANCE:
-    return "失衡";
   case FeatureCategoryL1::MICROSTRUCTURE:
     return "微结构";
   case FeatureCategoryL1::LABEL:
@@ -201,8 +205,6 @@ static const std::vector<FeatureMetadata> &get_current_level_features(const Feat
     return feature.metadata.features_l0;
   case 1:
     return feature.metadata.features_l1;
-  case 2:
-    return feature.metadata.features_l2;
   default:
     return feature.metadata.features_l0;
   }
@@ -313,8 +315,6 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::RadioButton("L0", &sel.selected_level, 0);
   ImGui::SameLine();
   ImGui::RadioButton("L1", &sel.selected_level, 1);
-  ImGui::SameLine();
-  ImGui::RadioButton("L2", &sel.selected_level, 2);
 
   level_changed = (sel.selected_level != prev_level);
 

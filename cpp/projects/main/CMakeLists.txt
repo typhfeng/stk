@@ -75,6 +75,7 @@ elseif(DEBUG_MODE)
     add_compile_definitions(DEBUG_MODE)
     if(IS_WINDOWS)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -march=native")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DEBUG:FULL")
     else()
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -march=native")
     endif()
@@ -227,11 +228,9 @@ set(HEADERS
     ../../include/features/backend/FeatureStoreConfig.hpp
     ../../include/features/backend/FeatureStore.hpp
     ../../include/features/backend/ZstdHelper.hpp
-    ../../include/features/FeaturesHour/Hour_Sequential.hpp
     ../../include/features/FeaturesMinute/Minute_Sequential.hpp
     ../../include/features/ComputeGraph.hpp
     ../../include/features/FeaturesTick/Tick_Sequential.hpp
-    ../../include/features/FeaturesHour/Hour_Crosssection.hpp
     ../../include/features/FeaturesMinute/Minute_Crosssection.hpp
     ../../include/features/FeaturesTick/Tick_Crosssection.hpp
     ../../include/features/CoreSequential.hpp
