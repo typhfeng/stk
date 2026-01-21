@@ -20,6 +20,7 @@
 #include "features/FeaturesTick/TS/GRAD.hpp"
 #include "features/FeaturesTick/TS/OFI.hpp"
 #include "features/FeaturesTick/TS/PARA.hpp"
+#include "features/FeaturesTick/TS/BuyMood.hpp"
 #include "features/FeaturesTick/TS/TLR.hpp"
 #include <deque>
 
@@ -131,6 +132,11 @@ public:
     CBuffer<float, L2::BLEN> ofi_1_;
     CBuffer<float, L2::BLEN> ofi_5_;
 
+    // --- BM: Buy Mood Features (买入情绪特征) ---
+    CBuffer<float, L2::BLEN> aggressive_buy_vol_;
+    CBuffer<float, L2::BLEN> passive_buy_vol_;
+    CBuffer<float, L2::BLEN> buy_mood_ratio_;
+
     // -------------------------------------------------------------------------
     // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
     // -------------------------------------------------------------------------
@@ -187,6 +193,9 @@ public:
     OFI<1> ofi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_1_};
     OFI<5> ofi_5{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_5_};
 
+    // BM: Buy Mood
+    BuyMood buy_mood{td, BidPrice_[0], AskPrice_[0], aggressive_buy_vol_, passive_buy_vol_, buy_mood_ratio_};
+
     explicit L0(TickData &t) : td(t) {} // 构造函数 (只需初始化引用成员)
   };
   L0 l0;
@@ -230,6 +239,8 @@ public:
     if (prev_close > 0) {
       l0.DepthData.set_prev_close(prev_close);
     }
+    // 重置BuyMood累计量
+    l0.buy_mood.reset();
     // TODO: 后续新增算子的跨天重置逻辑统一加在这里
   }
 };

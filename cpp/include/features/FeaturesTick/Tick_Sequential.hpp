@@ -71,6 +71,7 @@ inline void Tick_Sequential::compute_ts_tick(size_t t) {
   // =========================================================================
   if (dag_.tick_data.lob.order_type == L2::OrderType::TAKER) {
     dag_.l0.TradePrice.compute();
+    dag_.l0.buy_mood.compute(); // 买入情绪因子计算
   }
 
   // =========================================================================
@@ -166,6 +167,11 @@ inline void Tick_Sequential::compute_ts_tick(size_t t) {
     ts_features_buffer_[L0_FieldOffset::imba_30_entropy] = dag_.l0.imba_30_entropy_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_1] = dag_.l0.ofi_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_5] = dag_.l0.ofi_5_.back();
+    
+    // --- BM: Buy Mood Features (买入情绪特征) ---
+    ts_features_buffer_[L0_FieldOffset::aggressive_buy_vol] = dag_.l0.aggressive_buy_vol_.back();
+    ts_features_buffer_[L0_FieldOffset::passive_buy_vol] = dag_.l0.passive_buy_vol_.back();
+    ts_features_buffer_[L0_FieldOffset::buy_mood_ratio] = dag_.l0.buy_mood_ratio_.back();
 
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_depth_valid, asset_id_, 1.0f, worker_id_);
   }
