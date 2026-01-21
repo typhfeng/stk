@@ -9,7 +9,9 @@
 set -euo pipefail
 
 # 配置
-DEVICE="/dev/sde"
+# 注意: 根据实际情况，设备可能是 /dev/sda1 或 /dev/sde1
+# 脚本会自动检测可用的设备
+DEVICE="/dev/sda"  # 优先尝试 /dev/sda，如果不存在则尝试 /dev/sde
 MOUNTPOINT="/mnt/dev/sde/A_stock/L2"
 LOG_DIR=".local_changes/mount"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,19 +30,32 @@ log() {
 
 log "开始挂载脚本执行"
 
-# 检查设备是否存在
-if [ ! -b "$DEVICE" ]; then
-    log "错误: 设备 $DEVICE 不存在"
+# 智能设备检测：优先尝试 /dev/sda1，然后 /dev/sde1
+PARTITION=""
+for dev in "/dev/sda1" "/dev/sde1" "/dev/sda" "/dev/sde"; do
+    if [ -b "$dev" ]; then
+        # 检查是否是分区（有数字后缀）
+        if [[ "$dev" =~ [0-9]$ ]]; then
+            PARTITION="$dev"
+            log "找到分区设备: $PARTITION"
+            break
+        elif [ -b "${dev}1" ]; then
+            PARTITION="${dev}1"
+            log "找到分区设备: $PARTITION"
+            break
+        else
+            PARTITION="$dev"
+            log "找到设备: $PARTITION (整盘，无分区)"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PARTITION" ]; then
+    log "错误: 未找到可用的设备 (/dev/sda1, /dev/sde1, /dev/sda, /dev/sde)"
     echo "可用设备列表:" | tee -a "$LOG_DIR/mount.log"
     lsblk -o NAME,MODEL,SIZE,FSTYPE,MOUNTPOINT | tee -a "$LOG_DIR/mount.log"
     exit 1
-fi
-
-# 检查设备是否有分区（通常使用 /dev/sde1）
-PARTITION="${DEVICE}1"
-if [ ! -b "$PARTITION" ]; then
-    log "警告: 分区 $PARTITION 不存在，尝试使用 $DEVICE"
-    PARTITION="$DEVICE"
 fi
 
 # 创建挂载点
