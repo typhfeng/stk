@@ -3,6 +3,8 @@
 
 #include "gui/task_database/ui/TabBrowser.hpp"
 #include "imgui.h"
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -62,6 +64,24 @@ int GetDayOfWeek(const std::string &date_dense) {
   return time_in.tm_wday;
 }
 
+bool IsLeapYear(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+int DaysInMonth(int year, int month) {
+  assert(month >= 1 && month <= 12);
+
+  static constexpr int days_by_month[] = {
+      31, 28, 31, 30, 31, 30,
+      31, 31, 30, 31, 30, 31};
+
+  if (month == 2 && IsLeapYear(year)) {
+    return 29;
+  }
+
+  return days_by_month[month - 1];
+}
+
 // ============================================================================
 // Build Daily Statistics from all data sources
 // ============================================================================
@@ -69,6 +89,7 @@ int GetDayOfWeek(const std::string &date_dense) {
 std::map<std::string, DailyStats> BuildDailyStats(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
+    const StockInfoMap &stock_info,
     const Asset &asset_data,
     const std::string &backtest_start,
     const std::string &backtest_end) {
@@ -112,9 +133,7 @@ std::map<std::string, DailyStats> BuildDailyStats(
     auto it = stats_map.find(date_dense);
     if (it != stats_map.end()) {
       it->second.total_assets = date_stat.total_assets;
-      it->second.assets_with_snapshots = date_stat.assets_with_snapshots;
       it->second.assets_with_orders = date_stat.assets_with_orders;
-      it->second.assets_with_both = date_stat.assets_with_both;
     }
   }
 
@@ -137,11 +156,15 @@ std::map<std::string, DailyStats> BuildDailyStats(
       float factor_prev = std::stod(data[i - 1][1]);
 
       // Check if there's a significant factor change (dividend/split)
-      float ratio = std::abs(factor_curr / factor_prev - 1.0);
-      if (ratio > 0.0001) { // Threshold for detecting events
+      float ratio = factor_curr / factor_prev;
+      if (std::abs(ratio - 1.0) > 0.0001) { // Threshold for detecting events
         auto it = stats_map.find(date_dense);
         if (it != stats_map.end()) {
-          it->second.dividend_split_count++;
+          auto info_it = stock_info.find(code);
+          it->second.dividend_events.push_back(
+              {code,
+               info_it != stock_info.end() ? info_it->second.name : std::string(),
+               ratio});
         }
       }
     }
@@ -263,7 +286,6 @@ void RenderMonthGrid(
   // Pre-convert colors to U32 (avoid repeated conversions)
   const ImU32 color_bg_weekday = ImGui::GetColorU32(COLOR_GRAY);
   const ImU32 color_bg_weekend = ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
-  const ImU32 color_yellow = ImGui::GetColorU32(COLOR_YELLOW);
   const ImU32 color_purple = ImGui::GetColorU32(COLOR_PURPLE);
   const ImU32 color_green = ImGui::GetColorU32(COLOR_GREEN);
   const ImU32 color_blue = ImGui::GetColorU32(COLOR_BLUE);
@@ -276,17 +298,17 @@ void RenderMonthGrid(
   // Track maximum row for height calculation
   int max_row = 0;
 
-  // Day grid (up to 31 days, arranged in rows of 7, aligned by day of week)
-  for (int day = 1; day <= 31; ++day) {
+  const int days_in_month = DaysInMonth(year, month);
+
+  // Day grid (only valid days in month, arranged in rows of 7, aligned by day of week)
+  for (int day = 1; day <= days_in_month; ++day) {
     // Build date string YYYYMMDD (only once)
     char date_dense[16];
     snprintf(date_dense, sizeof(date_dense), "%04d%02d%02d", year, month, day);
     std::string date_key(date_dense);
 
-    // Check if date is valid
     int dow = GetDayOfWeek(date_key);
-    if (dow < 0)
-      break; // Invalid date
+    assert(dow >= 0);
 
     // Calculate grid position
     int total_offset = first_col + day - 1;
@@ -319,9 +341,7 @@ void RenderMonthGrid(
     // For trading days with assets and completeness enabled: show green/yellow/red
     // If total_assets == 0, it means this date is outside database range, keep default gray
     if (state.layers.show_completeness && stats && stats->is_trading_day && stats->total_assets > 0) {
-      float completeness = (state.view_mode == BrowserViewMode::All)         ? stats->completeness_all()
-                           : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots()
-                                                                             : stats->completeness_orders();
+      const float completeness = stats->completeness_orders();
 
       border_color = (completeness >= 0.9999f) ? color_border_green
                      : (completeness >= 0.95f) ? color_border_yellow
@@ -332,17 +352,13 @@ void RenderMonthGrid(
     draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), border_color);
 
     // Step 3: Determine fill color based on priority (highest visible layer wins)
-    // Priority: Yellow > Purple > Green > Blue > Background
+    // Priority: Purple > Green > Blue > Background (除权除息是叠加层, 见 Step 5)
     ImU32 fill_color = bg_color;
 
     if (stats) {
       // Check from lowest to highest priority (last match wins)
-      if (state.layers.show_l2_data) {
-        bool has_data = (state.view_mode == BrowserViewMode::All)         ? (stats->assets_with_both > 0)
-                        : (state.view_mode == BrowserViewMode::Snapshots) ? (stats->assets_with_snapshots > 0)
-                                                                          : (stats->assets_with_orders > 0);
-        if (has_data)
-          fill_color = color_blue;
+      if (state.layers.show_l2_data && stats->assets_with_orders > 0) {
+        fill_color = color_blue;
       }
 
       if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
@@ -352,19 +368,25 @@ void RenderMonthGrid(
       if (state.layers.show_holiday && stats->is_holiday) {
         fill_color = color_purple;
       }
-
-      if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
-        fill_color = color_yellow;
-      }
     }
 
     // Step 4: Draw inner fill (inset by BORDER_THICKNESS from all sides)
-    draw_list->AddRectFilled(
-        ImVec2(x0 + BORDER_THICKNESS, y0 + BORDER_THICKNESS),
-        ImVec2(x1 - BORDER_THICKNESS, y1 - BORDER_THICKNESS),
-        fill_color);
+    const ImVec2 inner_min(x0 + BORDER_THICKNESS, y0 + BORDER_THICKNESS);
+    const ImVec2 inner_max(x1 - BORDER_THICKNESS, y1 - BORDER_THICKNESS);
+    draw_list->AddRectFilled(inner_min, inner_max, fill_color);
 
-    // Step 5: Hover detection and tooltip
+    // Step 5: 除权除息叠一层黄, alpha 按当日事件数给 (见 kDividendSaturationCount).
+    // 不是替换 fill 而是叠加 —— 否则这一层一开就把节假日/回测区间/L2 全盖掉.
+    if (state.layers.show_dividend_split && stats && !stats->dividend_events.empty()) {
+      const float t = std::min(
+          static_cast<float>(stats->dividend_events.size()) / kDividendSaturationCount, 1.0f);
+      const float alpha = kDividendAlphaFloor + (1.0f - kDividendAlphaFloor) * t;
+      draw_list->AddRectFilled(
+          inner_min, inner_max,
+          ImGui::GetColorU32(ImVec4(COLOR_YELLOW.x, COLOR_YELLOW.y, COLOR_YELLOW.z, alpha)));
+    }
+
+    // Step 6: Hover detection and tooltip
     const ImVec2 cell_max(x1, y1);
     if (ImGui::IsMouseHoveringRect(cell_pos, cell_max)) {
       state.hover_date = DateToDashed(date_key);
@@ -375,9 +397,7 @@ void RenderMonthGrid(
         static const char *dow_names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
         const char *dow_name = (dow >= 0 && dow <= 6) ? dow_names[dow] : "?";
 
-        float completeness = (state.view_mode == BrowserViewMode::All)         ? stats->completeness_all() * 100.0f
-                             : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots() * 100.0f
-                                                                               : stats->completeness_orders() * 100.0f;
+        const float completeness = stats->completeness_orders() * 100.0f;
 
         ImGui::BeginTooltip();
         ImGui::Text("Date: %s (%s)%s", state.hover_date.c_str(), dow_name,
@@ -385,22 +405,41 @@ void RenderMonthGrid(
         ImGui::Separator();
         ImGui::Text("Backtest Range: %s", stats->is_in_backtest_range ? "YES" : "NO");
         ImGui::Separator();
-        ImGui::Text("L2 Data Coverage:");
+        ImGui::Text("L2 Data Coverage: (BJ / 当日停牌 不计入分母)");
         ImGui::Text("  Total Stocks: %zu", stats->total_assets);
-        ImGui::Text("  With Snapshots: %zu (%.1f%%)", stats->assets_with_snapshots,
-                    stats->total_assets > 0 ? stats->completeness_snapshots() * 100.0f : 0.0f);
-        ImGui::Text("  With Orders: %zu (%.1f%%)", stats->assets_with_orders,
-                    stats->total_assets > 0 ? stats->completeness_orders() * 100.0f : 0.0f);
-        ImGui::Text("  With Both: %zu (%.1f%%)", stats->assets_with_both,
-                    stats->total_assets > 0 ? stats->completeness_all() * 100.0f : 0.0f);
+        ImGui::Text("  With Orders: %zu (%.1f%%)", stats->assets_with_orders, completeness);
         ImGui::Separator();
-        ImGui::Text("Dividend/Split Events: %zu stocks", stats->dividend_split_count);
-        ImGui::Separator();
-
-        const char *view_name = (state.view_mode == BrowserViewMode::All)         ? "All"
-                                : (state.view_mode == BrowserViewMode::Snapshots) ? "Snapshots"
-                                                                                  : "Orders";
-        ImGui::Text("Data Completeness: %.1f%% [View: %s]", completeness, view_name);
+        ImGui::Text("Dividend/Split Events: %zu stocks", stats->dividend_events.size());
+        // 明细: 代码 + 简称 + 复权因子比值 (>1 = 除权除息, 因子被上调)
+        constexpr size_t kMaxListed = 30;
+        const size_t listed = std::min(stats->dividend_events.size(), kMaxListed);
+        if (listed > 0) {
+          // 固定列宽, 避免中文简称 3/4 字宽度不同导致错位
+          ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 1.0f));
+          if (ImGui::BeginTable(
+                  "##dividend_events", 3,
+                  ImGuiTableFlags_PadOuterX | ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("code", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+            ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+            ImGui::TableSetupColumn("ratio", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+            for (size_t k = 0; k < listed; ++k) {
+              const DividendEvent &ev = stats->dividend_events[k];
+              ImGui::TableNextRow();
+              ImGui::TableSetColumnIndex(0);
+              ImGui::TextUnformatted(ev.code.c_str());
+              ImGui::TableSetColumnIndex(1);
+              ImGui::TextUnformatted(ev.name.empty() ? "-" : ev.name.c_str());
+              ImGui::TableSetColumnIndex(2);
+              ImGui::Text("x%.6f", ev.ratio);
+            }
+            ImGui::EndTable();
+          }
+          ImGui::PopStyleVar();
+        }
+        if (stats->dividend_events.size() > listed) {
+          ImGui::TextDisabled("  ... +%zu more",
+                              stats->dividend_events.size() - listed);
+        }
         ImGui::EndTooltip();
       } else {
         ImGui::SetTooltip("%s (No data)", state.hover_date.c_str());
@@ -451,6 +490,7 @@ void RenderYearRow(
 void RenderTabBrowser(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
+    const StockInfoMap &stock_info,
     const Asset &asset_data,
     const std::string &backtest_start,
     const std::string &backtest_end,
@@ -469,30 +509,13 @@ void RenderTabBrowser(
   // Build or reuse daily statistics cache
   if (browser_state.daily_stats_cache.empty()) {
     browser_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, asset_data, backtest_start, backtest_end);
+        stock_days, stock_factors, stock_info, asset_data, backtest_start, backtest_end);
   }
 
-  // View Mode Selector and Refresh Button
-  ImGui::Text("View Mode:");
-  ImGui::SameLine();
-  if (ImGui::RadioButton("All", browser_state.view_mode == BrowserViewMode::All)) {
-    browser_state.view_mode = BrowserViewMode::All;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("Snapshots", browser_state.view_mode == BrowserViewMode::Snapshots)) {
-    browser_state.view_mode = BrowserViewMode::Snapshots;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("Orders", browser_state.view_mode == BrowserViewMode::Orders)) {
-    browser_state.view_mode = BrowserViewMode::Orders;
-  }
-  ImGui::SameLine();
-  ImGui::Spacing();
-  ImGui::SameLine();
   if (ImGui::Button("Refresh Data")) {
     browser_state.daily_stats_cache.clear();
     browser_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, asset_data, backtest_start, backtest_end);
+        stock_days, stock_factors, stock_info, asset_data, backtest_start, backtest_end);
   }
 
   // Layer Toggle Buttons
@@ -556,15 +579,9 @@ void RenderTabBrowser(
     }
     if (stats.is_in_backtest_range && stats.is_trading_day) {
       backtest_days++;
-      if (browser_state.view_mode == BrowserViewMode::All) {
-        avg_completeness += stats.completeness_all();
-      } else if (browser_state.view_mode == BrowserViewMode::Snapshots) {
-        avg_completeness += stats.completeness_snapshots();
-      } else {
-        avg_completeness += stats.completeness_orders();
-      }
+      avg_completeness += stats.completeness_orders();
     }
-    total_dividend_events += stats.dividend_split_count;
+    total_dividend_events += static_cast<int>(stats.dividend_events.size());
   }
 
   if (backtest_days > 0) {
@@ -588,7 +605,7 @@ void RenderTabBrowser(
   ImGui::SameLine();
   ImGui::TextColored(COLOR_YELLOW, "■");
   ImGui::SameLine(0, 2);
-  ImGui::Text("除权除息");
+  ImGui::Text("除权除息(≥%d只满黄)", static_cast<int>(kDividendSaturationCount));
   ImGui::SameLine(0, 10);
   ImGui::TextColored(COLOR_PURPLE, "■");
   ImGui::SameLine(0, 2);

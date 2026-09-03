@@ -20,8 +20,15 @@
 
 namespace L2 {
 
-inline constexpr size_t DEFAULT_ENCODER_SNAPSHOT_SIZE = 5000; // 3秒全量快照 4*3600/3=4800
-inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000;  // 逐笔合并(增删改成交)
+inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增删改成交), encoder/decoder 缓冲上限
+
+// LimitOrderBook 内部容量 (order_lookup_/order_memory_pool_ 初始预留).
+// 与 DEFAULT_ENCODER_ORDER_SIZE 分开: 后者是单资产单日逐笔数的安全上限
+// (给 encoder/decoder 缓冲用), 但 LOB 是 5892 只资产各自常驻整个进程生命周期
+// (每天只 clear() 计数, 不释放容量) —— 按 200000 预留 × 5892 会把 108GB 的
+// 虚拟预留逐步坐实成 RSS. 多数股票单日逐笔数远小于此; BumpPool 超容量会
+// 自动 expand_storage() 扩容 (不截断数据), 调小只影响"预留多少", 不影响正确性.
+inline constexpr size_t LOB_ORDER_CAPACITY = 30000;
 
 // Data Struct
 inline constexpr int BLEN = 100;            // default length for Cbuffers (feature computation)
@@ -131,23 +138,94 @@ struct Snapshot {
 };
 
 // 逐笔合并(增删改成交)
+//
+// 定长 20 字节. 字段按"热路径直接寻址"排: volume、两个 id、四个时间字段都是
+// 平凡成员, 取值零开销; 只有价格与类型/方向共用最后 4 字节的位域 —— 29+2+1
+// 正好填满一个 uint32, 既不浪费也不让结构变大, 读价格只多一次 AND.
+//
+// price 29bit 覆盖到 536 万元. A 股最高价在千元量级, 位宽窄于 18bit 就会把高价
+// 股的价格钳平; volume 给满 32bit, 交易所单笔申报上限是 100 万股. 这两个字段的
+// 富余都是位域凑数凑出来的, 不占额外空间.
+//
+// price 是绝对价 (分), 但已折进 LOB 的档位窗口: 窗口外的报价在落盘时就停靠到
+// 边缘, 见 BinaryEncoder_L2::park_price 与 kPriceIndexRange.
 struct Order {
+  uint32_t volume;       // 股
+  uint32_t bid_order_id; // 32bit
+  uint32_t ask_order_id; // 32bit
+
   uint8_t hour;        // 5bit
   uint8_t minute;      // 6bit
   uint8_t second;      // 6bit
   uint8_t millisecond; // 7bit (in 10ms)
 
-  OrderType order_type;     // 2bit - 0:maker(order) 1:cancel 2:change 3:taker(trade)
-  OrderDirection order_dir; // 1bit - 0:bid 1:ask
-  uint16_t price;           // 14bit - price in 0.01 RMB units
-  uint32_t volume;          // 22bit - in shares (expanded to support up to 4M shares)
-
-  uint32_t bid_order_id; // 32bit
-  uint32_t ask_order_id; // 32bit
+  uint32_t price : 29;          // 绝对价, 0.01 RMB 单位 (分), 上限 536 万元
+  OrderType order_type : 2;     // 0:maker(order) 1:cancel 3:taker(trade)
+  OrderDirection order_dir : 1; // 0:bid 1:ask
   // (order_type, order_dir)== |(0,0)        |(0,1)         |(1,0)         |(1,1)          |(2,0) |(2,1) |(3,0)         |(3,1)
   // bid_order_id:             |buy_maker_id |0             |buy_cancel_id |0              |0     |0     |buy_taker_id  |buy_maker_id
   // ask_order_id:             |0            |sell_maker_id |0             |sell_cancel_id |0     |0     |sell_maker_id |sell_taker_id
 };
+// 位域必须与前面三个 uint32 和四个 uint8 严丝合缝地凑满 20 字节 —— 一旦编译器
+// 给位域另起了存储单元, 落盘格式就悄悄变了.
+static_assert(sizeof(Order) == 20, "Order 必须定宽 20 字节");
+
+// LOB 档位数组的窗口宽度 (分), 即 655.35 元.
+//
+// LimitOrderBook 拿价格当档位数组的下标直接索引, 数组不能开成绝对价的全域: 每
+// 个资产一个 LOB 且全部常驻, 五千多个实例按 65536 档算已是 3 GB 量级, 按千元级
+// 价格的全域开就是十几 GB. 所以窗口只覆盖单只标的一天的价格跨度, 按
+// (price - price_base) 索引.
+//
+// 655.35 元的宽度对单日成交带绰绰有余 —— 涨跌停把它限制在前收盘的 ±20% 以内.
+// 下标 0 保留给市价单/无价格档 (LOB 的 Level[0]), 所以窗口的有效范围是
+// [base+1, base+kPriceIndexRange-1]; base 为 0 时下标就等于绝对价.
+inline constexpr uint32_t kPriceIndexRange = 65536;
+
+// price_base 的对齐粒度 (分). 只为让基准取整可读, 不参与任何判据.
+inline constexpr uint32_t kPriceIndexGuard = 4096;
+
+// ============================================================================
+// L2 二进制文件格式 (v2) — 数据完整性的统一方案: "存在即完整"
+// ============================================================================
+//
+// 三道防线, 热读路径零成本:
+//   1. 原子落盘 (tmp + rename): 最终路径上的文件不可能是半截 — 进程被杀/
+//      崩溃只会留下 .tmp 垃圾, 由下次增量编码覆盖消化.
+//   2. 定宽自描述头 (本结构): magic/version 挡住"不是 L2 文件/旧格式",
+//      尺寸字段自洽性挡住截断 — 读侧只花几次整数比较.
+//   3. zstd 帧内容校验 (xxh64, 压缩时写入): 热路径显式跳过 (不花解压之外
+//      的一分钱), 离线 Verify 强制校验 → 位腐烂/历史遗留损坏被查出并删除,
+//      下次增量编码自动补齐. 修复回路 = Verify(删坏) + 增量(补齐).
+//
+// 布局: [L2FileHeader 32B][zstd 帧], 帧解开后是 [u64 count][Order × count].
+struct L2FileHeader {
+  static constexpr uint32_t kL2Magic = 0x004F324C; // 'L','2','O','\0' 小端
+  // Order 的布局一改就必须递增: 版本对不上的文件在 sane() 处被当成缺失, 由增量
+  // 编码重写, 于是不存在按旧布局误读的可能.
+  static constexpr uint32_t kL2FormatVersion = 2;
+
+  uint32_t magic;           // kL2Magic
+  uint32_t version;         // kL2FormatVersion
+  uint64_t raw_size;        // 解压后字节数 = 8 + count * sizeof(Order)
+  uint64_t compressed_size; // zstd 帧字节数; 文件总长 = 32 + compressed_size
+  // 本文件内全部非零价格的下界 (分), 向下对齐. LOB 用它把绝对价折进 65536 档的
+  // 直接索引数组: index = price - price_base. 低价股恒为 0 (即退化成原来的直接
+  // 索引), 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
+  uint32_t price_base;
+  uint32_t reserved; // 置 0; 凑定宽 32B
+
+  // 头部自洽 (不含内容校验): magic/version 对, 且尺寸恰好装得下整数条 Order
+  bool sane() const {
+    return magic == kL2Magic && version == kL2FormatVersion &&
+           raw_size >= sizeof(uint64_t) &&
+           (raw_size - sizeof(uint64_t)) % sizeof(Order) == 0 &&
+           compressed_size > 0;
+  }
+
+  uint64_t order_count() const { return (raw_size - sizeof(uint64_t)) / sizeof(Order); }
+};
+static_assert(sizeof(L2FileHeader) == 32, "L2FileHeader 必须定宽 32 字节");
 
 struct ColumnMeta {
   std::string_view column_name; // 列名
@@ -178,8 +256,8 @@ constexpr ColumnMeta Snapshot_Schema[] = {
     {"millisecond",       7   },// "取值范围 0-127,7bit 足够"},
     {"order_type",        2   },// "仅增删改成交四种值"},
     {"order_dir",         1   },// "仅bid ask 两种值"},
-    {"price",             14  },// "价格(0.01 RMB units)"},
-    {"volume",            22  },// "成交量(股), expanded to 22bit to support up to 4M shares"},
+    {"price",             29  },// "逐笔价格(0.01 RMB units), 绝对价, 上限 536 万元"},
+    {"volume",            32  },// "逐笔量(股), 满宽"},
     {"bid_order_id",      32  },// "订单id"},
     {"ask_order_id",      32  },// "订单id"},
   };

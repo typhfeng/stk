@@ -5,8 +5,8 @@
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <functional>
-#include <vector>
 #include <string>
+#include <vector>
 
 // Forward declarations
 struct SharedData;
@@ -23,7 +23,7 @@ using boost::asio::io_context;
 
 enum class ScanStatus {
   Idle,
-  
+
   // Scan phases (fine-grained)
   InitializingCheck,  // Starting scan coroutine
   CheckingFileSystem, // Checking if directories exist
@@ -31,7 +31,7 @@ enum class ScanStatus {
   ScanningArchive,    // Scanning archive database
   ComputingCoverage,  // Computing backtest coverage
   AnalyzingStatus,    // Determining database status
-  
+
   // Final states
   Completed,
   Error
@@ -55,7 +55,6 @@ struct BinaryDatabaseInfo {
   bool exists = false;
   std::string path;
   size_t total_dates = 0;
-  size_t coverage_in_backtest = 0;
   std::vector<std::string> available_dates;
 };
 
@@ -63,7 +62,6 @@ struct ArchiveDatabaseInfo {
   bool exists = false;
   std::string path;
   size_t total_dates = 0;
-  size_t coverage_in_backtest = 0;
   std::vector<std::string> available_dates;
 };
 
@@ -78,17 +76,16 @@ struct DatabaseCheckResult {
   ArchiveDatabaseInfo archive;
 
   // Coverage analysis
-  size_t required_dates = 0;   // Required trading days in backtest period
-  size_t binary_coverage = 0;  // Binary covered dates
-  size_t archive_coverage = 0; // Archive available dates
+  size_t required_dates = 0;  // Required trading days in backtest period
+  size_t binary_coverage = 0; // Binary covered dates
 
   // Missing details
   std::vector<std::string> missing_dates;      // All missing dates
   std::vector<std::string> missing_can_encode; // Missing but has archive
   std::vector<std::string> missing_no_archive; // Missing without archive
 
-  // Helper
-  bool can_unlock_overview() const {
+  // Helper: L2 覆盖检查通过 (binary 覆盖回测区间内全部交易日)
+  bool is_pass() const {
     return status == DatabaseStatus::Pass;
   }
 
@@ -150,19 +147,21 @@ public:
 
   ScanStatus get_status() const { return status_; }
   bool is_scanning() const { return is_scanning_.load(); }
-  bool is_idle() const { 
-    return status_ == ScanStatus::Idle || 
+  bool is_idle() const {
+    return status_ == ScanStatus::Idle ||
            status_ == ScanStatus::Completed ||
            status_ == ScanStatus::Error;
   }
 
-  const DatabaseCheckResult& get_last_check_result() const { return last_check_; }
-  const char* get_status_string() const;
+  const DatabaseCheckResult &get_last_check_result() const { return last_check_; }
+  const char *get_status_string() const;
 
 private:
+  // get_status_string 返回裸指针, 带进度的那两个阶段需要一块常驻缓冲
+  mutable char status_buf_[64] = {};
+
   // Complete scan flow (coroutine)
   awaitable<void> coro_scan();
 };
 
 } // namespace GUI::Database
-

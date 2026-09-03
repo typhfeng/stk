@@ -1,5 +1,5 @@
 #include "shared/Config.hpp"
-#include "package/nlohmann/json.hpp"
+#include "nlohmann/json.hpp"
 #include <fstream>
 
 using json = nlohmann::json;
@@ -39,7 +39,7 @@ void Config::SyncStringBuffers() {
   snprintf(start_date_buf, sizeof(start_date_buf), "%s", start_date.c_str());
   snprintf(end_date_buf, sizeof(end_date_buf), "%s", end_date.c_str());
   snprintf(archive_dir_buf, sizeof(archive_dir_buf), "%s", archive_dir.c_str());
-  snprintf(database_dir_buf, sizeof(database_dir_buf), "%s", database_dir.c_str());
+  snprintf(orders_dir_buf, sizeof(orders_dir_buf), "%s", orders_dir.c_str());
   snprintf(feature_dir_buf, sizeof(feature_dir_buf), "%s", feature_dir.c_str());
   snprintf(factor_dir_buf, sizeof(factor_dir_buf), "%s", factor_dir.c_str());
   snprintf(log_dir_buf, sizeof(log_dir_buf), "%s", log_dir.c_str());
@@ -47,16 +47,6 @@ void Config::SyncStringBuffers() {
   snprintf(csv_market_data_buf, sizeof(csv_market_data_buf), "%s", csv_market_data.c_str());
   snprintf(csv_tick_trade_buf, sizeof(csv_tick_trade_buf), "%s", csv_market_trade.c_str());
   snprintf(csv_tick_order_buf, sizeof(csv_tick_order_buf), "%s", csv_market_order.c_str());
-  snprintf(archive_extension_buf, sizeof(archive_extension_buf), "%s", archive_extension.c_str());
-  snprintf(archive_tool_buf, sizeof(archive_tool_buf), "%s", archive_tool.c_str());
-  snprintf(archive_extract_cmd_buf, sizeof(archive_extract_cmd_buf), "%s", archive_extract_cmd.c_str());
-  snprintf(binary_extension_buf, sizeof(binary_extension_buf), "%s", binary_extension.c_str());
-  snprintf(assets_file_buf, sizeof(assets_file_buf), "%s", assets_file.c_str());
-  snprintf(baostock_stock_factor_file_buf, sizeof(baostock_stock_factor_file_buf), "%s", baostock_stock_factor_file.c_str());
-  snprintf(baostock_stock_info_file_buf, sizeof(baostock_stock_info_file_buf), "%s", baostock_stock_info_file.c_str());
-  snprintf(baostock_stock_days_file_buf, sizeof(baostock_stock_days_file_buf), "%s", baostock_stock_days_file.c_str());
-  baostock_max_workers_buf = baostock_max_workers;
-  baostock_weekly_update_day_buf = baostock_weekly_update_day;
 }
 
 void Config::AutoSync() {
@@ -102,7 +92,7 @@ bool Config::LoadFromFile() {
   start_date = j.value("start_date", start_date);
   end_date = j.value("end_date", end_date);
   archive_dir = j.value("archive_dir", archive_dir);
-  database_dir = j.value("database_dir", database_dir);
+  orders_dir = j.value("orders_dir", orders_dir);
   feature_dir = j.value("feature_dir", feature_dir);
   factor_dir = j.value("factor_dir", factor_dir);
   log_dir = j.value("log_dir", log_dir);
@@ -110,19 +100,6 @@ bool Config::LoadFromFile() {
   csv_market_data = j.value("csv_market_data", csv_market_data);
   csv_market_trade = j.value("csv_market_trade", csv_market_trade);
   csv_market_order = j.value("csv_market_order", csv_market_order);
-  archive_extension = j.value("archive_extension", archive_extension);
-  archive_tool = j.value("archive_tool", archive_tool);
-  archive_extract_cmd = j.value("archive_extract_cmd", archive_extract_cmd);
-  binary_extension = j.value("binary_extension", binary_extension);
-
-  // Baostock configuration
-  assets_file = j.value("assets_file", assets_file);
-  baostock_data_manager_file = j.value("baostock_data_manager_file", baostock_data_manager_file);
-  baostock_stock_factor_file = j.value("baostock_stock_factor_file", baostock_stock_factor_file);
-  baostock_stock_info_file = j.value("baostock_stock_info_file", baostock_stock_info_file);
-  baostock_stock_days_file = j.value("baostock_stock_days_file", baostock_stock_days_file);
-  baostock_max_workers = j.value("baostock_max_workers", baostock_max_workers);
-  baostock_weekly_update_day = j.value("baostock_weekly_update_day", baostock_weekly_update_day);
 
   return true;
 }
@@ -134,7 +111,7 @@ bool Config::SaveToFile() {
   j["start_date"] = start_date;
   j["end_date"] = end_date;
   j["archive_dir"] = archive_dir;
-  j["database_dir"] = database_dir;
+  j["orders_dir"] = orders_dir;
   j["feature_dir"] = feature_dir;
   j["factor_dir"] = factor_dir;
   j["log_dir"] = log_dir;
@@ -142,19 +119,6 @@ bool Config::SaveToFile() {
   j["csv_market_data"] = csv_market_data;
   j["csv_market_trade"] = csv_market_trade;
   j["csv_market_order"] = csv_market_order;
-  j["archive_extension"] = archive_extension;
-  j["archive_tool"] = archive_tool;
-  j["archive_extract_cmd"] = archive_extract_cmd;
-  j["binary_extension"] = binary_extension;
-
-  // Baostock configuration
-  j["assets_file"] = assets_file;
-  j["baostock_data_manager_file"] = baostock_data_manager_file;
-  j["baostock_stock_factor_file"] = baostock_stock_factor_file;
-  j["baostock_stock_info_file"] = baostock_stock_info_file;
-  j["baostock_stock_days_file"] = baostock_stock_days_file;
-  j["baostock_max_workers"] = baostock_max_workers;
-  j["baostock_weekly_update_day"] = baostock_weekly_update_day;
 
   std::ofstream file(filepath);
   if (!file.is_open()) {
@@ -168,11 +132,11 @@ bool Config::SaveToFile() {
   if (log_callback) {
     log_callback("Config auto-saved to: " + filepath);
   }
-  
+
   // Trigger GUI reinitialization after config save
   if (reinit_callback) {
     reinit_callback();
   }
-  
+
   return true;
 }

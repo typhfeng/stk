@@ -7,17 +7,21 @@
 #include "shared/AssetInfo.hpp"
 #include <map>
 #include <string>
+#include <vector>
 
 namespace GUI::Database {
 
-// View mode enum for different data perspectives
-enum class BrowserViewMode {
-  All,       // Show stocks with both snapshots AND orders
-  Snapshots, // Show snapshots coverage
-  Orders     // Show orders coverage
+// 单只标的的一次除权除息 (复权因子变点)
+struct DividendEvent {
+  std::string code;  // "sz.000001"
+  std::string name;  // 简称, 基本面查不到时为空
+  float ratio = 0.0; // factor_curr / factor_prev
 };
 
-// Daily statistics aggregated for a single date
+// Daily statistics aggregated for a single date.
+//
+// 早先这里按"快照 / 逐笔 / 两者都有"分三种视角看覆盖率. 快照不再编码后, L2
+// 覆盖率只剩一个口径 (逐笔), 三种视角合成一种, 视图模式的枚举也就没了.
 struct DailyStats {
   std::string date_str; // YYYYMMDD format
   bool is_trading_day = false;
@@ -26,20 +30,12 @@ struct DailyStats {
 
   // L2 data coverage
   size_t total_assets = 0; // Total stocks listed on this date
-  size_t assets_with_snapshots = 0;
   size_t assets_with_orders = 0;
-  size_t assets_with_both = 0; // Both snapshots AND orders
 
-  // Dividend/split events
-  size_t dividend_split_count = 0; // Number of stocks with events on this date
+  // Dividend/split events (按代码升序; 数量即 .size())
+  std::vector<DividendEvent> dividend_events;
 
-  // Completeness metrics (0.0 - 1.0)
-  float completeness_all() const {
-    return total_assets > 0 ? (float)assets_with_both / total_assets : 0.0f;
-  }
-  float completeness_snapshots() const {
-    return total_assets > 0 ? (float)assets_with_snapshots / total_assets : 0.0f;
-  }
+  // Completeness metric (0.0 - 1.0)
   float completeness_orders() const {
     return total_assets > 0 ? (float)assets_with_orders / total_assets : 0.0f;
   }
@@ -47,12 +43,21 @@ struct DailyStats {
 
 // Layer visibility toggle state
 struct LayerVisibility {
-  bool show_dividend_split = true; // Layer 1: Yellow
+  bool show_dividend_split = true; // Layer 1: Yellow (半透明叠加, 见 kDividendSaturationCount)
   bool show_holiday = true;        // Layer 2: Purple
   bool show_backtest_range = true; // Layer 3: Green
   bool show_l2_data = true;        // Layer 4: Blue
   bool show_completeness = true;   // Border: Green/Yellow/Red
 };
+
+// 黄色达到满饱和度所需的当日除权除息标的数.
+//
+// 全市场口径下几乎每个交易日都有除权除息, 铺成实心黄会把下面三层全盖掉,
+// 所以黄色改成按当日事件数定 alpha 的叠加层: 到这个数就是满黄, 越少越透.
+inline constexpr float kDividendSaturationCount = 50.0f;
+
+// 只有 1~2 个标的时 alpha 趋 0 会彻底看不见, 给条下限
+inline constexpr float kDividendAlphaFloor = 0.15f;
 
 // Browser state
 struct BrowserState {
@@ -60,7 +65,6 @@ struct BrowserState {
   int selected_month = -1;
   int selected_day = -1;
   std::string hover_date;
-  BrowserViewMode view_mode = BrowserViewMode::All;
   std::map<std::string, DailyStats> daily_stats_cache; // date -> stats
   LayerVisibility layers;
 };
@@ -69,6 +73,7 @@ struct BrowserState {
 void RenderTabBrowser(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
+    const StockInfoMap &stock_info,
     const Asset &asset_data,
     const std::string &backtest_start,
     const std::string &backtest_end,

@@ -4,193 +4,749 @@
 #include "codec/L2_DataType.hpp"
 #include "codec/binary_encoder_L2.hpp"
 #include "misc/affinity.hpp"
+#include "misc/archive.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
+#include "shared/AssetAxis.hpp"
 
 #include <algorithm>
-#include <cstdlib>
+#include <cassert>
 #include <filesystem>
-#include <memory>
-#include <mutex>
-#include <random>
+#include <fstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 // ============================================================================
-// RAR LOCK MANAGER
+// BATCH QUEUE
 // ============================================================================
 
-class RarLockManager {
-  inline static std::mutex map_mutex;
-  inline static std::unordered_map<std::string, std::unique_ptr<std::mutex>> locks;
-
-public:
-  static std::mutex *get_or_create_lock(const std::string &archive_path) {
-    std::lock_guard<std::mutex> lock(map_mutex);
-    if (locks.find(archive_path) == locks.end()) {
-      locks[archive_path] = std::make_unique<std::mutex>();
-    }
-    return locks[archive_path].get();
-  }
-};
-
-// ============================================================================
-// ENCODING HELPER
-// ============================================================================
-
-static bool extract_and_encode(const std::string &archive_path,
-                               const std::string &asset_code,
-                               const std::string &asset_exchange,
-                               const std::string &date_str,
-                               const std::string &database_dir,
-                               const std::string &archive_tool,
-                               const std::string &archive_extract_cmd,
-                               const std::string &binary_extension,
-                               L2::BinaryEncoder_L2 &encoder,
-                               DateInfo &date_info) {
-  namespace fs = std::filesystem;
-
-  // Lock archive for extraction
-  std::lock_guard<std::mutex> lock(*RarLockManager::get_or_create_lock(archive_path));
-
-  // Extract to temp dir
-  const std::string asset_full = asset_code + "." + asset_exchange; // e.g. "603269.SH"
-  const std::string temp_dir = database_dir + "/tmp_" + asset_code;
-  fs::create_directories(temp_dir);
-
-  const std::string archive_name = fs::path(archive_path).stem().string();
-  const std::string asset_path_in_archive = archive_name + "/" + asset_full + "/*";
-  const std::string command = archive_tool + " " + archive_extract_cmd + " \"" + archive_path +
-                              "\" \"" + asset_path_in_archive + "\" \"" +
-                              temp_dir + "/\" -y > /dev/null 2>&1";
-
-  if (std::system(command.c_str()) != 0) {
-    fs::remove_all(temp_dir);
+bool BatchQueue::push(EncodeBatch batch) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  not_full_.wait(lock, [this] { return closed_ || queue_.size() < capacity_; });
+  if (closed_)
     return false;
-  }
-
-  // Move extracted data to final location
-  const std::string extracted_dir = temp_dir + "/" + date_str + "/" + asset_full;
-  if (!fs::exists(extracted_dir)) {
-    fs::remove_all(temp_dir);
-    return false;
-  }
-
-  fs::create_directories(fs::path(date_info.database_dir).parent_path());
-  if (fs::exists(date_info.database_dir)) {
-    fs::remove_all(date_info.database_dir);
-  }
-  fs::rename(extracted_dir, date_info.database_dir);
-  fs::remove_all(temp_dir);
-
-  // Encode CSV to binary
-  std::vector<L2::Snapshot> snapshots;
-  std::vector<L2::Order> orders;
-  if (!encoder.process_stock_data(date_info.database_dir, date_info.database_dir,
-                                  asset_full, &snapshots, &orders)) {
-    return false;
-  }
-
-  date_info.order_count = orders.size();
-
-  // Scan for binary files and clean up CSV
-  for (const auto &entry : fs::directory_iterator(date_info.database_dir)) {
-    const std::string path = entry.path().string();
-    const std::string filename = entry.path().filename().string();
-
-    if (path.ends_with(".csv")) {
-      fs::remove(entry.path());
-    } else if (path.ends_with(binary_extension)) {
-      if (filename.starts_with(asset_full + "_snapshots_")) {
-        date_info.snapshots_file = path;
-      } else if (filename.starts_with(asset_full + "_orders_")) {
-        date_info.orders_file = path;
-      }
-    }
-  }
-
+  queue_.push_back(std::move(batch));
+  lock.unlock();
+  not_empty_.notify_one();
   return true;
 }
 
+bool BatchQueue::pop(EncodeBatch &out) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  not_empty_.wait(lock, [this] { return closed_ || !queue_.empty(); });
+  if (queue_.empty())
+    return false; // 已 close 且排空
+  out = std::move(queue_.front());
+  queue_.pop_front();
+  lock.unlock();
+  not_full_.notify_one();
+  return true;
+}
+
+void BatchQueue::close() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    closed_ = true;
+  }
+  not_empty_.notify_all();
+  not_full_.notify_all();
+}
+
+// ============================================================================
+// ENCODING PRODUCER — 列举 + 推元数据批
+// ============================================================================
+
+namespace {
+
+// 一批最多多少个资产 — 权衡两件事:
+//   摊薄 unrar 固定开销 (进程启动 + 三万条目包头扫描): 批越大越省, 实测 20 个
+//   资产一次调用比 20 次单独调用快 3.3x;
+//   负载均衡: 批是 worker 的调度粒度, 批太大会在收尾时让部分 worker 空转.
+constexpr size_t kAssetsPerBatch = 64;
+
+} // namespace
+
+void encoding_producer(SharedData &data,
+                       BatchQueue &queue,
+                       std::atomic<bool> *cancel_flag,
+                       bool skip_existing,
+                       EncodeStats &stats,
+                       size_t worker_count,
+                       misc::ParallelProgress *progress) {
+  TraceNS("EncodingProducer", 5);
+
+  const AssetAxis &axis = asset_axis();
+  assert(data.asset.items.size() == axis.size() &&
+         "items 未与 A 轴对齐 (AssetLoader::load 没跑?)");
+  // 空轴下每一天都会退化成"零分母" (包里认不出任何资产), 编出来的只有一堆
+  // 空账目 — 与其跑完再排查, 不如开跑前就断在这里
+  assert(!axis.empty() && "A 轴为空 (基本面未就绪?), 编码无从进行");
+  assert(worker_count > 0 && "encoding_producer: worker_count 必须为正");
+
+  // 编码范围 = 回测区间 (config.start_date / end_date), 与特征计算一致.
+  // all_dates 是 binary ∪ archive 的全集, 不收窄会去编回测区间外的天
+  // (见 ComputeService 对 all_dates 的同类过滤). config 日期是 "YYYY-MM-DD",
+  // all_dates 是 "YYYYMMDD", 去掉 '-' 后按字典序比较.
+  auto yyyymmdd = [](std::string s) {
+    s.erase(std::remove(s.begin(), s.end(), '-'), s.end());
+    return s;
+  };
+  const std::string bt_start = yyyymmdd(data.config.start_date);
+  const std::string bt_end = yyyymmdd(data.config.end_date);
+  std::vector<std::string> dates;
+  dates.reserve(data.asset.all_dates.size());
+  for (const auto &d : data.asset.all_dates)
+    if (d >= bt_start && d <= bt_end)
+      dates.push_back(d);
+
+  // EncodingService 先按全集设了 summary_total, 这里收窄到回测区间内的天数.
+  if (progress && dates.size() != data.asset.all_dates.size())
+    progress->set_summary_total(dates.size(), true);
+
+  const size_t total_days = dates.size();
+
+  for (size_t idx = 0; idx < total_days && !cancel_flag->load(); ++idx) {
+    const std::string &date_str = dates[idx];
+    TraceN("ProducerDay");
+    TraceTextS(date_str.c_str());
+
+    const std::string archive_path = Utils::generate_archive_path(
+        data.config.archive_dir, date_str, config::ARCHIVE_EXTENSION);
+
+    // 增量新鲜度规则: 产物 (.bin / .skip 墓碑 / 整天账目) 存在且不老于
+    // 归档 → 跳过.
+    //   - 原子落盘保证"存在即完整", 一次 stat 就够, 不需要读内容;
+    //   - 归档被重下/修复过 → mtime 变新 → 产物判过期, 重编覆盖.
+    //     "修复受损数据"由此不需要单独的通道 (盘上位腐烂走离线 Verify).
+    std::filesystem::file_time_type archive_mtime{};
+    {
+      std::error_code ec;
+      archive_mtime = std::filesystem::last_write_time(archive_path, ec);
+    }
+    auto fresh = [&archive_mtime](const std::string &p) {
+      std::error_code ec;
+      const auto t = std::filesystem::last_write_time(p, ec);
+      return !ec && t >= archive_mtime;
+    };
+
+    // 整天账目的快路径 — 必须在列举之前: 下面那次 unrar l 要在机械盘上走完
+    // 整条包头链 (实测 0.2~2.5s), 加上当天几千次产物 stat, 光"确认无事可做"
+    // 就是几秒一天.
+    //
+    // 出错的天同样会留下账目 (供界面按日拆解原因), 所以判据是 complete 项而
+    // 不是文件在不在 —— 只有整天齐备才能跳过.
+    const std::string day_dir = Utils::generate_date_dir(data.config.orders_dir, date_str);
+    if (skip_existing && fresh(day_dir + "/" + kEncodeDayRecordName)) {
+      EncodeDayRecord prev;
+      if (read_encode_day_record(day_dir, prev) && prev.complete) {
+        stats.days_skipped.fetch_add(1);
+        if (progress)
+          progress->bump_summary(1, false); // 秒回的一天, 不参与 ETA 速率
+        continue;
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // 列举 — 当日包里"实际有哪些资产、每个文件多大"
+    //
+    // 全市场下不能拿 ipo/退市区间去盲试: 那会对当天包里没有的资产各发一次
+    // unrar (每次重走三万条目的包头). 先列举拿到当天真实 universe, 再按
+    // A 轴过滤掉 ETF/基金 (轴只含股票).
+    //
+    // 尺寸在这一步就要拿到 —— worker 靠它在 unrar p 的输出流上切分边界.
+    // ------------------------------------------------------------------
+    std::vector<misc::ArchiveEntry> entries;
+    const misc::ArchiveListStatus list_status =
+        misc::list_archive(archive_path, config::ARCHIVE_TOOL, entries);
+
+    if (list_status == misc::ArchiveListStatus::Corrupt) {
+      // 包头链断了, 这天连有哪些资产都问不出来 — 留日志跳过, 不落完成标记,
+      // 人工修好源文件后靠增量自动补齐 (绝不 abort, 见 archive.hpp)
+      Logger::log("encoding", "[CORRUPT ARCHIVE] " + archive_path +
+                                  " — cannot list, day skipped, source needs repair");
+      stats.days_corrupt.fetch_add(1);
+      if (progress)
+        progress->bump_summary(1, false);
+      continue;
+    }
+
+    // 没有源: 这天既无从编码, 也无从判断齐备 — 直接走, 绝不落完成标记.
+    // 盘上很可能还留着上一轮的半成品 (归档事后被移走/还没下回来), 一旦标成
+    // complete, 增量的快路径就再也不会回来补这一天.
+    if (list_status == misc::ArchiveListStatus::Missing) {
+      if (progress)
+        progress->bump_summary(1, false);
+      continue;
+    }
+
+    // 同一资产的委托/成交/行情条目在包里是分开的三条, 先按资产归并
+    struct Pending {
+      size_t order_index = 0, trade_index = 0, market_index = 0;
+      size_t order_size = 0, trade_size = 0, market_size = 0;
+    };
+    std::unordered_map<size_t, Pending> by_asset;
+
+    for (const auto &entry : entries) {
+      // "20260803/000001.SZ/逐笔委托.csv" → code_ex, filename
+      const size_t first = entry.path.find('/');
+      if (first == std::string::npos)
+        continue;
+      const size_t second = entry.path.find('/', first + 1);
+      if (second == std::string::npos)
+        continue;
+
+      const std::string code_ex = entry.path.substr(first + 1, second - first - 1);
+      const std::string filename = entry.path.substr(second + 1);
+
+      const bool is_order = (filename == data.config.csv_market_order);
+      const bool is_trade = (filename == data.config.csv_market_trade);
+      // 行情.csv 不编码落盘, 但要读进来做准入校验 (见 L2_Validator.hpp)
+      const bool is_market = (filename == data.config.csv_market_data);
+      if (!is_order && !is_trade && !is_market)
+        continue; // 委托队列.csv 等历史遗留文件
+
+      // 代码变更前的日子, 归档里是老代码, 轴上只有新代码 — 换回来才认得出
+      // (见 config::CODE_CHANGES). 无变更记录时 current_code 原样返回.
+      const size_t asset_id = axis.find(config::current_code(code_ex, date_str));
+      if (asset_id == axis.size())
+        continue; // 非股票 (ETF/基金) 或轴外代码
+
+      Pending &p = by_asset[asset_id];
+      if (is_order) {
+        p.order_index = entry.index;
+        p.order_size = entry.size;
+      } else if (is_trade) {
+        p.trade_index = entry.index;
+        p.trade_size = entry.size;
+      } else {
+        p.market_index = entry.index;
+        p.market_size = entry.size;
+      }
+    }
+
+    // 断点续跑: 产物新鲜就跳过 (见上方 fresh 规则).
+    //
+    // 顺带填当天账目: 分母是这里认下的资产数, 已新鲜的按产物种类归到
+    // ok / skipped —— 增量跑只重编缺产物的那些, 光靠 worker 的销账凑不齐
+    // 全天的分类.
+    EncodeDayRecord day_rec;
+    std::vector<EncodeTask> tasks;
+    tasks.reserve(by_asset.size());
+    for (const auto &[asset_id, p] : by_asset) {
+      if (p.order_size == 0)
+        continue; // 没有委托文件, 无从重建盘口
+
+      ++day_rec.assets_total;
+
+      const AssetItem &asset = data.asset.items[asset_id];
+      if (skip_existing) {
+        const bool has_bin = fresh(Utils::generate_orders_path(
+            data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
+            config::BINARY_EXTENSION));
+        const bool has_skip = !has_bin && fresh(Utils::generate_orders_path(
+                                              data.config.orders_dir, date_str, asset.asset_code,
+                                              asset.exchange, kEncodeTombstoneExt));
+        if (has_bin || has_skip) {
+          stats.pairs_skipped.fetch_add(1);
+          if (has_bin)
+            ++day_rec.assets_ok;
+          else
+            ++day_rec.assets_skipped;
+          continue;
+        }
+      }
+      tasks.push_back({asset_id, p.order_index, p.trade_index, p.market_index,
+                       p.order_size, p.trade_size, p.market_size});
+    }
+
+    // 收尾统计计数
+    if (!tasks.empty()) {
+      std::lock_guard<std::mutex> lock(stats.assets_mutex);
+      for (const auto &task : tasks)
+        stats.assets_with_work.insert(task.asset_id);
+    }
+    stats.pairs_listed.fetch_add(tasks.size());
+
+    if (tasks.empty()) {
+      // 整天跳过 (产物全部新鲜/包里没活) 也是完成了一天 — 补上账目, 下次连
+      // 列举都省了. 目录不存在说明这天从来没有产物 (退化情况), 不留文件,
+      // 免得凭空造出空日目录 (扫描会把它当成"有这天").
+      //
+      // 走到这里说明每个资产都留下了产物, 一个错误都没剩 —— 出错的对不会
+      // 留下 .bin 也不会留下墓碑, 必然被上面重新列成任务.
+      //
+      // 但零分母不算"齐备": assets_total == 0 意味着包里一个 A 轴资产都没
+      // 认出来 (包内结构不符 / 轴与归档口径错位), 那是"什么都没看见"而不是
+      // "什么都齐了". 真齐备的天分母是几千. 标了 complete 增量就再也不来,
+      // 半成品会被永久冻在盘上 — 所以这种天留日志跳过, 不落标记.
+      if (day_rec.assets_total == 0) {
+        Logger::log("encoding", "[NO ASSETS] " + archive_path + " — " +
+                                    std::to_string(entries.size()) +
+                                    " entries listed but none on the asset axis, day skipped, "
+                                    "no completion marker written");
+      } else if (std::filesystem::exists(day_dir)) {
+        day_rec.complete = true;
+        write_encode_day_record(day_dir, day_rec);
+      }
+      if (progress)
+        progress->bump_summary(1, false); // 只列举没真编, 不参与 ETA 速率
+      continue;
+    }
+
+    // 按归档序排, 再切成批 — unrar p 的输出顺序是归档顺序 (已实测),
+    // worker 按这个顺序在流上切分.
+    std::sort(tasks.begin(), tasks.end(),
+              [](const EncodeTask &a, const EncodeTask &b) { return a.order_index < b.order_index; });
+
+    // 注册天粒度账本 — 必须在推批之前 (worker 落盘时要查账).
+    // 若这是当前最老的在编天, 顺手把附注立起来 (否则第一天列举/预读的
+    // 几十秒里汇总行是空的).
+    {
+      std::lock_guard<std::mutex> lock(stats.days_mutex);
+      const bool oldest = stats.days_inflight.empty();
+      stats.days_inflight.emplace(date_str,
+                                  EncodeStats::DayProgress{0, tasks.size(), 0, day_rec});
+      stats.days_touched.insert(date_str);
+      if (oldest && progress)
+        progress->set_summary_note(date_str + ": 0/" + std::to_string(tasks.size()) +
+                                   " assets");
+    }
+
+    // 目标目录建一次即可 (一天一个目录), 必须在推批之前
+    std::filesystem::create_directories(day_dir);
+
+    const size_t even_batch_size = (tasks.size() + worker_count - 1) / worker_count;
+    const size_t batch_size = std::min(kAssetsPerBatch, even_batch_size);
+    assert(batch_size > 0 && "encoding_producer: batch_size 必须为正");
+
+    for (size_t i = 0; i < tasks.size() && !cancel_flag->load(); i += batch_size) {
+      EncodeBatch batch;
+      batch.date = date_str;
+      batch.archive_path = archive_path;
+      batch.tasks.assign(tasks.begin() + static_cast<long>(i), tasks.begin() + static_cast<long>(std::min(i + batch_size, tasks.size())));
+      if (!queue.push(std::move(batch)))
+        return; // 队列已关 = 取消
+    }
+
+    TraceFrame;
+  }
+}
+
+// ============================================================================
+// ENCODING WORKER — 每批自己 unrar + 解码 + 原子写 .bin
+// ============================================================================
+//
+// worker 只写文件, 不回填 data.asset.items 的 date_info.
+//
+// 同一个资产的不同日期会落在不同批上, 由不同 worker 并发处理 —— 再去写同一个
+// asset 的 date_info (std::map) 就是数据竞争. 编码产物的真相由编码后的重新
+// 扫描统一读取 (ScanService).
+
+namespace {
+
+// 批内一个待读文件在流上的位置
+enum class SlotKind : uint8_t { Order,
+                                Trade,
+                                Market };
+
+struct StreamSlot {
+  size_t task_idx;
+  SlotKind kind;
+};
+
+const std::string &slot_filename(const Config &config, SlotKind kind) {
+  switch (kind) {
+  case SlotKind::Order:
+    return config.csv_market_order;
+  case SlotKind::Trade:
+    return config.csv_market_trade;
+  case SlotKind::Market:
+    return config.csv_market_data;
+  }
+  assert(false && "slot_filename: 未覆盖的 SlotKind");
+  return config.csv_market_order;
+}
+
+size_t slot_size(const EncodeTask &task, SlotKind kind) {
+  switch (kind) {
+  case SlotKind::Order:
+    return task.order_size;
+  case SlotKind::Trade:
+    return task.trade_size;
+  case SlotKind::Market:
+    return task.market_size;
+  }
+  assert(false && "slot_size: 未覆盖的 SlotKind");
+  return 0;
+}
+
+// 一块字节到达时喂给 encoder 的对应入口
+void feed_slot(L2::BinaryEncoder_L2 &encoder, SlotKind kind, const char *csv, size_t len) {
+  switch (kind) {
+  case SlotKind::Order:
+    encoder.feed_order_csv(csv, len);
+    return;
+  case SlotKind::Trade:
+    encoder.feed_trade_csv(csv, len);
+    return;
+  case SlotKind::Market:
+    encoder.feed_market_csv(csv, len);
+    return;
+  }
+  assert(false && "feed_slot: 未覆盖的 SlotKind");
+}
+
+} // namespace
+
 void encoding_worker(SharedData &data,
-                     std::vector<size_t> &asset_id_queue,
-                     std::mutex &queue_mutex,
+                     BatchQueue &queue,
                      std::atomic<bool> *cancel_flag,
+                     EncodeStats &stats,
                      unsigned int worker_id,
                      misc::ProgressHandle progress_handle) {
   TraceNS("EncodingWorker", 5);
   TraceValue(worker_id);
   TraceThread(("encoding_worker_" + std::to_string(worker_id)).c_str());
 
-  // Pin to core
   static thread_local bool affinity_set = false;
   if (!affinity_set && misc::Affinity::supported()) {
     const unsigned int core_count = misc::Affinity::core_count();
     affinity_set = misc::Affinity::pin_to_core(core_count > 0 ? worker_id % core_count : 0);
   }
 
-  L2::BinaryEncoder_L2 encoder(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE);
+  L2::BinaryEncoder_L2 encoder(L2::DEFAULT_ENCODER_ORDER_SIZE);
   progress_handle.set_label("Idle");
   progress_handle.update(1, 1, "");
 
   Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] Started");
 
-  while (!cancel_flag->load()) {
-    TraceN("AssetLoop");
+  // 归档序排好的读取计划, 跨批复用容量
+  std::vector<std::string> paths;
+  std::vector<size_t> sizes;
+  std::vector<StreamSlot> slots;
+  std::vector<size_t> stragglers; // 两块在归档序上不相邻的任务 (批内下标)
 
-    // Get next asset
-    size_t asset_id;
+  EncodeBatch batch;
+  while (!cancel_flag->load() && queue.pop(batch)) {
+    TraceN("BatchLoop");
+    TraceTextS(batch.date.c_str());
+
+    if (batch.tasks.empty())
+      continue;
+
+    // 批内所有文件按归档序排成一条读取计划.
+    //
+    // 这一步是必须的: unrar p 的输出顺序是归档顺序, 与名单顺序无关 (已实测).
+    // 排错了就会拿 A 的尺寸去切 B 的字节, 静默产出垃圾.
+    paths.clear();
+    sizes.clear();
+    slots.clear();
+
     {
-      std::lock_guard<std::mutex> lock(queue_mutex);
-      if (asset_id_queue.empty())
-        break;
-      asset_id = asset_id_queue.back();
-      asset_id_queue.pop_back();
-    }
+      std::vector<std::pair<size_t, StreamSlot>> plan; // (归档序, slot)
+      plan.reserve(batch.tasks.size() * 3);
+      for (size_t t = 0; t < batch.tasks.size(); ++t) {
+        const EncodeTask &task = batch.tasks[t];
+        plan.emplace_back(task.order_index, StreamSlot{t, SlotKind::Order});
+        if (task.trade_size > 0)
+          plan.emplace_back(task.trade_index, StreamSlot{t, SlotKind::Trade});
+        if (task.market_size > 0)
+          plan.emplace_back(task.market_index, StreamSlot{t, SlotKind::Market});
+      }
+      std::sort(plan.begin(), plan.end(),
+                [](const auto &a, const auto &b) { return a.first < b.first; });
 
-    AssetItem &asset = data.asset.items[asset_id];
-    progress_handle.set_label(asset.asset_code + " (" + asset.asset_name + ")");
-
-    // Shuffle dates to spread RAR contention
-    std::vector<std::string> date_keys;
-    date_keys.reserve(asset.date_info.size());
-    for (const auto &[date_str, _] : asset.date_info) {
-      date_keys.push_back(date_str);
-    }
-    std::random_device rd;
-    std::shuffle(date_keys.begin(), date_keys.end(), std::mt19937{rd()});
-
-    // Process dates
-    for (size_t i = 0; i < date_keys.size() && !cancel_flag->load(); ++i) {
-      TraceN("DateLoop");
-      const std::string &date_str = date_keys[i];
-      TraceTextS(date_str.c_str());
-      auto &date_info = asset.date_info[date_str];
-
-      progress_handle.update(i + 1, date_keys.size(), date_str);
-
-      // Skip if already encoded
-      if (date_info.snapshots_encoded && date_info.orders_encoded)
-        continue;
-
-      // Check archive exists
-      const std::string archive_path = Utils::generate_archive_path(
-          data.config.archive_dir, date_str, data.config.archive_extension);
-      if (!std::filesystem::exists(archive_path))
-        continue;
-
-      // Extract and encode
-      if (extract_and_encode(archive_path, asset.asset_code, asset.exchange, date_str, data.config.database_dir,
-                             data.config.archive_tool, data.config.archive_extract_cmd,
-                             data.config.binary_extension, encoder, date_info)) {
-        date_info.snapshots_encoded = 1;
-        date_info.orders_encoded = 1;
-      } else {
-        Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] [FAILED] " + date_str + " " +
-                                    asset.asset_code + "." + asset.exchange);
+      // 主流的流式切分假定"同一资产的几块在归档序上连成一段" — 包按 date/ASSET/
+      // 目录逐个写入时天然成立, 但修补过的归档会把补的文件追加到包尾, 于是同一
+      // 资产的几块在条目序上隔了上万条.
+      // 不相邻的任务从主计划剔除, 批尾单独小流处理 (见下方 stragglers 循环).
+      //
+      // 判据是"首尾跨度等于块数": 一个资产有 1~3 块 (委托必有, 成交/行情可缺),
+      // 连成一段当且仅当 last - first + 1 == count.
+      stragglers.clear();
+      {
+        constexpr size_t kNone = static_cast<size_t>(-1);
+        std::vector<size_t> first_pos(batch.tasks.size(), kNone);
+        std::vector<size_t> last_pos(batch.tasks.size(), kNone);
+        std::vector<size_t> slot_count(batch.tasks.size(), 0);
+        for (size_t i = 0; i < plan.size(); ++i) {
+          const size_t t = plan[i].second.task_idx;
+          if (first_pos[t] == kNone)
+            first_pos[t] = i;
+          last_pos[t] = i;
+          ++slot_count[t];
+        }
+        std::vector<char> non_adjacent(batch.tasks.size(), 0);
+        for (size_t t = 0; t < batch.tasks.size(); ++t) {
+          if (first_pos[t] == kNone)
+            continue;
+          if (last_pos[t] - first_pos[t] + 1 != slot_count[t]) {
+            non_adjacent[t] = 1;
+            stragglers.push_back(t);
+          }
+        }
+        if (!stragglers.empty())
+          plan.erase(std::remove_if(
+                         plan.begin(), plan.end(),
+                         [&](const auto &e) { return non_adjacent[e.second.task_idx]; }),
+                     plan.end());
       }
 
-      TraceFrame;
+      paths.reserve(plan.size());
+      sizes.reserve(plan.size());
+      slots.reserve(plan.size());
+      for (const auto &[archive_index, slot] : plan) {
+        const AssetItem &asset = data.asset.items[batch.tasks[slot.task_idx].asset_id];
+        // 归档里是当时的代码 (见 config::CODE_CHANGES), 变更前的日子要换回老的
+        const std::string asset_full =
+            config::archive_code(asset.asset_code + "." + asset.exchange, batch.date);
+        paths.push_back(batch.date + "/" + asset_full + "/" + slot_filename(data.config, slot.kind));
+        sizes.push_back(slot_size(batch.tasks[slot.task_idx], slot.kind));
+        slots.push_back(slot);
+      }
+
+#ifndef NDEBUG
+      // 剔除 stragglers 之后, 相邻性在主计划里是按构造保证的 (剔除只会
+      // 拉近剩余元素, 不会往中间插新东西). 万一还破 — 一个资产会被
+      // begin/finish 两次, 第二次把第一次的产物覆盖成半截数据, 完全无声,
+      // 与其信任不如当场炸.
+      std::vector<bool> closed(batch.tasks.size(), false);
+      for (size_t i = 0; i < slots.size(); ++i) {
+        const size_t t = slots[i].task_idx;
+        assert(!closed[t] && "encoding_worker: 主计划里仍有不相邻的资产, 切分会错位");
+        if (i + 1 < slots.size() && slots[i + 1].task_idx != t)
+          closed[t] = true;
+      }
+#endif
     }
+
+    // 流式消费: 每个文件到达就地解析, 一个资产的两块都喂完就落盘.
+    // 一次只持有一个文件的字节 — 批可以开得很大而内存不涨.
+    size_t current_task = paths.empty() ? 0 : slots[0].task_idx;
+    bool fed_any = false;
+    size_t done_in_batch = 0;
+
+    // 批内任务的销账表. 源损坏会让一部分任务永远落不了盘, 但它们仍要在天
+    // 账本里销账 —— 否则这天永远凑不齐 total, 进度会一直卡在它上面, 且后面
+    // 的天在附注里永远排不到前面.
+    std::vector<char> retired(batch.tasks.size(), 0);
+
+    // 天粒度账本: 本天 +1, 清零则整天收工 (汇总 days +1) 并落下账目文件.
+    //
+    // outcome 决定这一对进哪个桶; Ok / TooFewOrders 之外都算错 —— 没留下正确
+    // 产物 ⇒ rec.complete = false, 下次增量必须重新列举补齐.
+    // check_flags 只在 InvalidData 时有意义 (L2::Check 的位).
+    auto retire_task = [&](size_t task_idx, L2::EncodeResult outcome, uint32_t check_flags) {
+      assert(!retired[task_idx] && "retire_task: 同一任务销账两次");
+      retired[task_idx] = 1;
+      ++done_in_batch;
+      progress_handle.update(done_in_batch, batch.tasks.size(), batch.date);
+
+      bool day_done = false;
+      EncodeDayRecord finished_rec;
+      {
+        std::lock_guard<std::mutex> lock(stats.days_mutex);
+        auto it = stats.days_inflight.find(batch.date);
+        assert(it != stats.days_inflight.end() && "retire_task: 本天未在账本注册");
+
+        EncodeDayRecord &rec = it->second.rec;
+        switch (outcome) {
+        case L2::EncodeResult::Ok:
+          ++rec.assets_ok;
+          break;
+        case L2::EncodeResult::TooFewOrders:
+          ++rec.assets_skipped;
+          break;
+        case L2::EncodeResult::CorruptSource:
+          ++rec.assets_corrupt;
+          break;
+        case L2::EncodeResult::InvalidData:
+          ++rec.assets_invalid;
+          for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit)
+            if (check_flags & (1u << bit))
+              ++rec.checks[bit];
+          break;
+        case L2::EncodeResult::Error:
+          ++rec.assets_failed;
+          break;
+        }
+
+        const bool day_error = outcome != L2::EncodeResult::Ok &&
+                               outcome != L2::EncodeResult::TooFewOrders;
+        if (day_error)
+          ++it->second.errors;
+
+        if (++it->second.done == it->second.total) {
+          rec.complete = it->second.errors == 0;
+          finished_rec = rec;
+          day_done = true;
+          stats.days_inflight.erase(it);
+          progress_handle.bump_summary();
+        }
+        // 附注跟着最老的在编天走 (多天在飞时以它为准)
+        if (!stats.days_inflight.empty()) {
+          const auto &[day, counts] = *stats.days_inflight.begin();
+          progress_handle.set_summary_note(day + ": " + std::to_string(counts.done) + "/" +
+                                           std::to_string(counts.total) + " assets");
+        }
+      }
+      // 出错的天照样落账目 —— complete=0 让增量重来, 但界面在重跑之前就能
+      // 说清楚那天错在哪.
+      if (day_done)
+        write_encode_day_record(Utils::generate_date_dir(data.config.orders_dir, batch.date),
+                                finished_rec);
+    };
+
+    auto flush_task = [&](size_t task_idx) {
+      if (!fed_any)
+        return;
+      const EncodeTask &task = batch.tasks[task_idx];
+      const AssetItem &asset = data.asset.items[task.asset_id];
+      const std::string asset_full = asset.asset_code + "." + asset.exchange;
+      const std::string out_path = Utils::generate_orders_path(
+          data.config.orders_dir, batch.date, asset.asset_code, asset.exchange,
+          config::BINARY_EXTENSION);
+      const std::string skip_path = Utils::generate_orders_path(
+          data.config.orders_dir, batch.date, asset.asset_code, asset.exchange,
+          kEncodeTombstoneExt);
+
+      std::error_code ec;
+      uint32_t check_flags = 0;
+      const L2::EncodeResult outcome = encoder.finish_asset(out_path, batch.date + " " + asset_full);
+      switch (outcome) {
+      case L2::EncodeResult::Ok:
+        // 源修复后重新可编 → 清掉陈旧墓碑
+        std::filesystem::remove(skip_path, ec);
+        break;
+      case L2::EncodeResult::TooFewOrders:
+        // 持久否定缓存: touch 墓碑 (mtime = now), 增量重跑不再碰它;
+        // 旧归档编出的陈旧产物一并清掉 (新归档判定它不可编)
+        std::ofstream(skip_path, std::ios::trunc).flush();
+        std::filesystem::remove(out_path, ec);
+        break;
+      case L2::EncodeResult::CorruptSource:
+        // 源 CSV 坏行 (归档成员位腐烂). 什么都不写 — 不落 .bin (半真半假会
+        // 静默污染下游), 也不落墓碑 (那是"确实无数据"的语义). 已有的旧产物
+        // 保持原样, 由离线 Verify 定夺. 修好源文件后增量自动重来.
+        stats.pairs_corrupt.fetch_add(1);
+        break;
+      case L2::EncodeResult::InvalidData:
+        // 准入校验未过 (逐笔流不自洽或与快照对不上). 处置与 CorruptSource
+        // 相同 —— 什么都不写, 详情已由 finish_asset 记入日志, 等人核查数据.
+        // 命中的判据同时进当天账目, 供 Encode 页按日拆解原因.
+        check_flags = encoder.get_validation_report().flags;
+        stats.pairs_invalid.fetch_add(1);
+        break;
+      case L2::EncodeResult::Error:
+        // 环境错误 (磁盘满/压缩失败): 不留任何产物, 下次增量重试
+        Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] [FAILED] " +
+                                    batch.date + " " + asset_full);
+        break;
+      }
+      fed_any = false;
+      retire_task(task_idx, outcome, check_flags);
+    };
+
+    bool stream_ok = true;
+    if (!paths.empty()) {
+      TraceN("StreamBatch");
+      stream_ok = misc::stream_archive_files(
+          batch.archive_path, config::ARCHIVE_TOOL, paths, sizes,
+          [&](size_t i, const char *csv, size_t len) {
+            const StreamSlot &slot = slots[i];
+
+            // 换资产了 → 先把上一个收尾落盘
+            if (slot.task_idx != current_task) {
+              flush_task(current_task);
+              current_task = slot.task_idx;
+            }
+            if (!fed_any) {
+              encoder.begin_asset();
+              const AssetItem &asset = data.asset.items[batch.tasks[slot.task_idx].asset_id];
+              progress_handle.set_label(asset.asset_code + " " + asset.asset_name);
+              fed_any = true;
+            }
+
+            feed_slot(encoder, slot.kind, csv, len);
+          },
+          cancel_flag);
+    }
+
+    // 取消时流是中途断的, 手上可能只喂了半个资产 — 直接丢弃, 不落盘
+    // (落了会写出半截 .bin, 且续跑时被新鲜度规则跳过).
+    if (cancel_flag->load())
+      break;
+
+    // 流断了 (成员 CRC 失败 / 长度对不上): 手上这个资产的字节不完整, 丢掉;
+    // 已经落盘的那些是完整读出来的, 留着. 剩下没销账的任务在批尾统一记为
+    // 错误 ⇒ 这天不落完成标记, 等人修好源包后增量重来.
+    if (!stream_ok) {
+      fed_any = false;
+      Logger::log("encoding", "[CORRUPT ARCHIVE] " + batch.archive_path + " — stream broke at " +
+                                  batch.date + " (worker " + std::to_string(worker_id) +
+                                  "), remaining assets in batch skipped");
+    }
+
+    flush_task(current_task); // 主流的最后一个资产
+
+    // 不相邻任务的兜底: 每个任务单独开一次小流, 只含这一个资产的几块. 到达
+    // 先后无所谓 (finish_asset 统一合并排序); 多付一次 unrar 固定开销, 但这种
+    // 任务一天最多个位数, 无关紧要.
+    for (const size_t t : stragglers) {
+      if (cancel_flag->load())
+        break;
+      const EncodeTask &task = batch.tasks[t];
+      const AssetItem &asset = data.asset.items[task.asset_id];
+      const std::string base =
+          batch.date + "/" +
+          config::archive_code(asset.asset_code + "." + asset.exchange, batch.date) + "/";
+
+      // 这几块仍要按归档序请求 (unrar p 按归档序输出)
+      std::vector<std::pair<size_t, SlotKind>> own{{task.order_index, SlotKind::Order}};
+      if (task.trade_size > 0)
+        own.emplace_back(task.trade_index, SlotKind::Trade);
+      if (task.market_size > 0)
+        own.emplace_back(task.market_index, SlotKind::Market);
+      std::sort(own.begin(), own.end(),
+                [](const auto &a, const auto &b) { return a.first < b.first; });
+
+      std::vector<std::string> own_paths;
+      std::vector<size_t> own_sizes;
+      own_paths.reserve(own.size());
+      own_sizes.reserve(own.size());
+      for (const auto &[archive_index, kind] : own) {
+        own_paths.push_back(base + slot_filename(data.config, kind));
+        own_sizes.push_back(slot_size(task, kind));
+      }
+
+      encoder.begin_asset();
+      progress_handle.set_label(asset.asset_code + " " + asset.asset_name);
+      fed_any = true;
+      const bool ok = misc::stream_archive_files(
+          batch.archive_path, config::ARCHIVE_TOOL, own_paths, own_sizes,
+          [&](size_t i, const char *csv, size_t len) {
+            feed_slot(encoder, own[i].second, csv, len);
+          },
+          cancel_flag);
+      if (cancel_flag->load())
+        break;
+      if (!ok) // 字节不完整, 丢掉; 批尾按错误销账
+        fed_any = false;
+      flush_task(t);
+    }
+    if (cancel_flag->load())
+      break;
+
+    // 没能落盘的任务在这里销账 (归档流断的路径 — 手上的字节不完整, 整批
+    // 剩下的都编不出来). 正常批走不到这个循环体.
+    for (size_t t = 0; t < batch.tasks.size(); ++t)
+      if (!retired[t])
+        retire_task(t, L2::EncodeResult::CorruptSource, 0);
+
+    TraceFrame;
   }
+
+  progress_handle.set_label("Idle");
+  Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] Finished");
 }

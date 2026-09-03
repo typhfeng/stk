@@ -8,10 +8,21 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <cassert>
 #include <chrono>
 #include <filesystem>
 
 namespace GUI::Database {
+
+namespace {
+// 见 Phase 3 处的实测数据
+constexpr unsigned kScanThreads = 24;
+
+unsigned scan_threads() {
+  const unsigned cores = std::thread::hardware_concurrency();
+  return (cores > 0 && cores < kScanThreads) ? cores : kScanThreads;
+}
+} // namespace
 
 ScanService::ScanService(SharedData &data, io_context &io, TaskTerminal *term)
     : data_(data), io_(io), terminal_(term) {}
@@ -38,8 +49,7 @@ void ScanService::trigger_scan() {
     // Notify completion
     if (on_complete_callback_) {
       on_complete_callback_();
-    }
-  }(), boost::asio::detached);
+    } }(), boost::asio::detached);
 }
 
 awaitable<void> ScanService::coro_scan() {
@@ -80,8 +90,8 @@ awaitable<void> ScanService::coro_scan() {
   status_ = ScanStatus::CheckingFileSystem;
   co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
 
-  bool binary_exists = fs::exists(data_.config.database_dir) &&
-                       !fs::is_empty(data_.config.database_dir);
+  bool binary_exists = fs::exists(data_.config.orders_dir) &&
+                       !fs::is_empty(data_.config.orders_dir);
   bool archive_exists = fs::exists(data_.config.archive_dir) &&
                         !fs::is_empty(data_.config.archive_dir);
 
@@ -102,9 +112,12 @@ awaitable<void> ScanService::coro_scan() {
     status_ = ScanStatus::ScanningBinary;
     co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
 
-    auto scan_pool = std::make_shared<ScanThreadPool>(std::thread::hardware_concurrency());
-    co_await data_.asset.coro_scan_binary_database(io_, data_.config.database_dir,
-                                                   data_.config.binary_extension, scan_pool);
+    // 线程数不跟核数走: 读头的成本压在内核的路径解析上, 加线程并不摊薄.
+    // 451 万文件实测 8/24/72 线程分别是 4.50 / 3.27 / 4.09 秒 —— 超过二十
+    // 几个之后争用反而吃掉收益.
+    auto scan_pool = std::make_shared<ScanThreadPool>(scan_threads());
+    co_await data_.asset.coro_scan_binary_database(io_, data_.config.orders_dir,
+                                                   config::BINARY_EXTENSION, scan_pool);
   }
 
   // ========================================
@@ -115,9 +128,9 @@ awaitable<void> ScanService::coro_scan() {
     status_ = ScanStatus::ScanningArchive;
     co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
 
-    auto scan_pool = std::make_shared<ScanThreadPool>(std::thread::hardware_concurrency());
+    auto scan_pool = std::make_shared<ScanThreadPool>(scan_threads());
     co_await data_.asset.coro_scan_archive_database(io_, data_.config.archive_dir,
-                                                    data_.config.archive_extension, scan_pool);
+                                                    config::ARCHIVE_EXTENSION, scan_pool);
   }
 
   // ========================================
@@ -127,7 +140,18 @@ awaitable<void> ScanService::coro_scan() {
   status_ = ScanStatus::ComputingCoverage;
   co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
 
-  data_.asset.compute_backtest_coverage(backtest_start, backtest_end);
+  // required_dates 的 ground truth = 基本面交易日历 (调用方保证基本面 Ready:
+  // StateManager::initialize / TriggerRefreshFlow 只在 Ready 后触发扫描)
+  assert(!data_.assetinfo.get_stock_days().empty() && "基本面日历未就绪, 不应触发扫描");
+  data_.asset.compute_backtest_coverage(backtest_start, backtest_end, data_.assetinfo);
+
+  // Encode 的缺失表、Table 的 Orders%、Browser 的完整性是同一份统计, 在这里
+  // 一次算完. 放在扫描里而不是各页首帧惰性算: 那是 885 天 × 5800 资产的双重
+  // 遍历, 摊在渲染帧上会直接卡住一次交互.
+  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+  data_.asset.compute_coverage_statistics(data_.assetinfo.get_stock_info(),
+                                          data_.assetinfo.get_stock_days(),
+                                          data_.assetinfo.get_suspended());
 
   // ========================================
   // Phase 6: Analyze and determine status - update status, yield, then analyze
@@ -156,41 +180,22 @@ awaitable<void> ScanService::coro_scan() {
   result.missing_no_archive.assign(data_.asset.backtest.need_download.begin(),
                                    data_.asset.backtest.need_download.end());
 
-  // Decision Tree
-  if (binary_exists) {
-    // Case 1: binary exists
-    if (data_.asset.binary.min_date.empty() || data_.asset.binary.min_date > backtest_start) {
-      result.status = DatabaseStatus::NeedArchive;
-      result.error_message = "Binary starts too late (" + data_.asset.binary.min_date + " > " + backtest_start + ")";
-    } else if (data_.asset.binary.max_date.empty() || data_.asset.binary.max_date < backtest_end) {
-      result.status = DatabaseStatus::NeedArchive;
-      result.error_message = "Binary ends too early (" + data_.asset.binary.max_date + " < " + backtest_end + ")";
-    } else {
-      // Range OK
-      if (archive_exists) {
-        // Has archive: use archive as ground truth
-        if (result.missing_dates.empty()) {
-          result.status = DatabaseStatus::Pass;
-        } else {
-          result.status = DatabaseStatus::Incomplete;
-        }
-      } else {
-        // No archive: binary is ground truth
-        result.status = DatabaseStatus::Pass;
-      }
-    }
+  // Decision Tree (覆盖判定以交易日历为 ground truth, 不再看 archive/binary 的 min/max 区间)
+  assert(result.required_dates > 0 && "回测区间内无交易日 (config 日期错误?)");
+  if (result.missing_dates.empty()) {
+    // binary 覆盖全部交易日
+    result.status = DatabaseStatus::Pass;
+  } else if (!result.missing_no_archive.empty()) {
+    // 有交易日既无 binary 也无 archive — 日历为准, archive 自身缺日在此暴露
+    result.status = DatabaseStatus::NeedArchive;
+    result.error_message = std::to_string(result.missing_no_archive.size()) +
+                           " trading days have no archive";
+  } else if (binary_exists) {
+    // 缺失日全部可从 archive encode
+    result.status = DatabaseStatus::Incomplete;
   } else {
-    // Case 2: binary doesn't exist, but archive exists
-    if (data_.asset.archive.min_date.empty() || data_.asset.archive.min_date > backtest_start) {
-      result.status = DatabaseStatus::NeedArchive;
-      result.error_message = "Archive starts too late (" + data_.asset.archive.min_date + " > " + backtest_start + ")";
-    } else if (data_.asset.archive.max_date.empty() || data_.asset.archive.max_date < backtest_end) {
-      result.status = DatabaseStatus::NeedArchive;
-      result.error_message = "Archive ends too early (" + data_.asset.archive.max_date + " < " + backtest_end + ")";
-    } else {
-      // Range OK -> NotEncoded
-      result.status = DatabaseStatus::NotEncoded;
-    }
+    // binary 尚不存在, archive 覆盖完整
+    result.status = DatabaseStatus::NotEncoded;
   }
 
   // Cache result and finalize
@@ -199,20 +204,39 @@ awaitable<void> ScanService::coro_scan() {
   co_return;
 }
 
-const char* ScanService::get_status_string() const {
+const char *ScanService::get_status_string() const {
+  // 两个扫描阶段带进度. 缓冲区是成员而非局部, 因为返回的是裸指针.
+  auto with_progress = [this](const char *what) -> const char * {
+    const size_t done = data_.asset.scan_days_done.load(std::memory_order_relaxed);
+    const size_t total = data_.asset.scan_days_total.load(std::memory_order_relaxed);
+    if (total == 0)
+      return what;
+    snprintf(this->status_buf_, sizeof(this->status_buf_), "%s (%zu/%zu)", what, done, total);
+    return this->status_buf_;
+  };
+
   switch (status_) {
-    case ScanStatus::Idle: return "Idle";
-    case ScanStatus::InitializingCheck: return "Initializing check...";
-    case ScanStatus::CheckingFileSystem: return "Checking filesystem...";
-    case ScanStatus::ScanningBinary: return "Scanning binary database...";
-    case ScanStatus::ScanningArchive: return "Scanning archive database...";
-    case ScanStatus::ComputingCoverage: return "Computing coverage...";
-    case ScanStatus::AnalyzingStatus: return "Analyzing status...";
-    case ScanStatus::Completed: return "Completed";
-    case ScanStatus::Error: return "Error";
-    default: return "Unknown";
+  case ScanStatus::Idle:
+    return "Idle";
+  case ScanStatus::InitializingCheck:
+    return "Initializing check...";
+  case ScanStatus::CheckingFileSystem:
+    return "Checking filesystem...";
+  case ScanStatus::ScanningBinary:
+    return with_progress("Scanning binary database");
+  case ScanStatus::ScanningArchive:
+    return with_progress("Scanning archive database");
+  case ScanStatus::ComputingCoverage:
+    return "Computing coverage...";
+  case ScanStatus::AnalyzingStatus:
+    return "Analyzing status...";
+  case ScanStatus::Completed:
+    return "Completed";
+  case ScanStatus::Error:
+    return "Error";
+  default:
+    return "Unknown";
   }
 }
 
 } // namespace GUI::Database
-

@@ -12,6 +12,7 @@
 // Forward declarations
 struct SharedData;
 struct TaskTerminal;
+class BatchQueue;
 
 namespace GUI::Database {
 
@@ -61,16 +62,20 @@ private:
 
   int num_workers_ = 0;
   bool skip_existing_ = true;
+  std::unique_ptr<BatchQueue> queue_; // 跨 stop_encoding 可见, 取消时要 close 唤醒生产者
   std::chrono::steady_clock::time_point start_time_;
 
   FileCheck::FileCheckResult file_check_result_; // Cache file check result
 
-  std::future<void> encoding_thread_; // Background encoding thread
+  std::future<void> encoding_thread_;   // Background encoding thread
+  std::future<void> file_check_thread_; // Background file check thread
+  std::atomic<bool> file_check_running_{false};
 
   std::function<void()> scan_callback_; // Callback to trigger scan after encoding
 
 public:
   EncodingService(SharedData &data, TaskTerminal *term);
+  ~EncodingService(); // 定义在 cpp — BatchQueue 对头文件是不完整类型
 
   // Lifecycle (changed to non-coroutine, uses background threads)
   void start_encoding(int num_workers, bool skip_existing);
@@ -111,7 +116,11 @@ public:
 
   // File check (archive validation)
   void run_file_check(const std::string &archive_base_dir);
+  bool is_file_check_running() const { return file_check_running_.load(); }
   const FileCheck::FileCheckResult &get_file_check_result() const { return file_check_result_; }
+
+private:
+  void run_file_check_async(const std::string &archive_base_dir);
 };
 
 } // namespace GUI::Database

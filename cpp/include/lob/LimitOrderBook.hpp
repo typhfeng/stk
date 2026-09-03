@@ -60,8 +60,8 @@ public:
     init_sentinel_levels();
   }
 
-  void begin_day(const std::string &date_str) {
-    core_sequential_.begin_day(date_str);
+  void begin_day(const std::string &date_str, const float *fund_row) {
+    core_sequential_.begin_day(date_str, fund_row);
 
 #if DEBUG_BOOK_PRINT
     should_log_this_day_ = false;
@@ -129,6 +129,13 @@ public:
   // PUBLIC API: Utilities
   //======================================================================================
 
+  // 设置当日档位索引基准 (分), 取自 .bin 文件头. 必须在 clear() 之后、喂第一条
+  // 订单之前调用 —— 一天之内不可改变, 否则簿里已有的档位下标会指向别的价格.
+  HOT_NOINLINE void set_price_base(uint32_t price_base) {
+    price_base_ = price_base;
+    LOB_feature_.price_base = price_base;
+  }
+
   // Complete reset
   HOT_NOINLINE void clear() {
     price_levels_.fill(nullptr); // Reset direct array (all nullptr)
@@ -158,6 +165,7 @@ public:
     delta_qty_ = 0;
     target_id_ = 0;
     actual_price_ = 0;
+    price_base_ = 0; // 由 set_price_base() 按当日文件头重新给定
 #if DEBUG_ANOMALY_PRINT
     debug_.printed_anomalies.clear();
 #endif
@@ -200,6 +208,9 @@ private:
   //------------------------------------------------------------------------------------
   std::deque<Level> level_storage_;                      // All price levels (deque guarantees stable pointers)
   std::array<Level *, PRICE_RANGE_SIZE> price_levels_{}; // Direct array: Price -> Level* mapping for O(1) lookup (512 KB), initialized to all nullptr
+
+  // 当日档位索引基准 (分). 数组按 (绝对价 - 基准) 寻址, 见 price_to_index().
+  uint32_t price_base_ = 0;
 
   //------------------------------------------------------------------------------------
   // Layer 2: Order Tracking Infrastructure (订单追踪层)
@@ -287,7 +298,22 @@ private:
   // LEVEL MANAGEMENT (价格档位基础操作)
   //======================================================================================
 
-  // Get or create: Atomically get existing level or create new one (single array access)
+  // 绝对价 (分) → 档位数组下标.
+  //
+  // 下标 0 是留给市价单/无价格档的特殊档位, 所以 price==0 原样透传, 不减基准;
+  // price_base_ 为 0 时折算退化成恒等.
+  //
+  // 上下夹紧只是越界护栏: 落盘时 park_price 已把价格折进窗口, 正常情况下这两个
+  // 分支走不到. 留着是因为一旦走到就是档位数组越界.
+  HOT_INLINE Price price_to_index(uint32_t price) const {
+    if (price == 0) [[unlikely]]
+      return 0;
+    if (price <= price_base_) [[unlikely]]
+      return 1;
+    const uint32_t index = price - price_base_;
+    return static_cast<Price>(index < PRICE_RANGE_SIZE ? index : PRICE_RANGE_SIZE - 1);
+  }
+
   HOT_INLINE Level *level_get_or_create(Price price) {
     Level *level = price_levels_[price];
     if (level == nullptr) [[unlikely]] {
@@ -791,7 +817,13 @@ private:
   //======================================================================================
 
   // Core order processing implementation (shared by single/batch interfaces)
-  HOT_INLINE bool process_impl(const L2::Order &order) {
+  HOT_INLINE bool process_impl(const L2::Order &order_abs) {
+    // .bin 里存的是绝对价 (分), 而档位数组只开了 kPriceIndexRange 档并按下标直接
+    // 寻址. 在入口一次性折算, 函数体内此后所有价格比较与寻址都留在下标空间; 只有
+    // 对外暴露的 LOB_feature_.price 用回绝对价.
+    L2::Order order = order_abs;
+    order.price = price_to_index(order_abs.price);
+
     // Skip dirty orders @09:26:00
     if (order.price == 0 && order.volume == 0) [[unlikely]] {
       return true;
@@ -821,7 +853,7 @@ private:
     // Update feature order metadata (every order)
     LOB_feature_.order_type = order.order_type;
     LOB_feature_.order_dir = order.order_dir;
-    LOB_feature_.price = order.price * 0.01;
+    LOB_feature_.price = order_abs.price * 0.01; // 对外一律给绝对价
     LOB_feature_.volume = order.volume;
 
     // Detect transition from matching period to continuous trading

@@ -6,67 +6,132 @@
 #include "gui/task_database/ui/CrossSectionAnalysis.hpp"
 #include "imgui.h"
 #include "implot.h"
+#include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 #include <numeric>
+#include <set>
+#include <stdexcept>
+#include <string>
 
 namespace GUI::Database {
 
 // Color constants
 constexpr ImVec4 COLOR_SH = ImVec4(0.0f, 0.4f, 0.8f, 1.0f);
 constexpr ImVec4 COLOR_SZ = ImVec4(0.0f, 0.6f, 0.5f, 1.0f);
-constexpr ImVec4 COLOR_GREEN = ImVec4(0.3f, 0.95f, 0.4f, 1.0f);
-constexpr ImVec4 COLOR_YELLOW = ImVec4(1.0f, 0.95f, 0.3f, 1.0f);
+constexpr ImVec4 COLOR_BJ = ImVec4(0.8f, 0.5f, 0.1f, 1.0f);
 constexpr ImVec4 COLOR_RED = ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
 constexpr ImVec4 COLOR_GRAY = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
 
 // ============================================================================
-// Helper: Calculate days since IPO
+// Helper: 在市时长 (ipoDate → outDate 或今天), 分解成 年/月/日
 // ============================================================================
 
-int CalculateDaysSinceIPO(const std::string &ipo_date) {
-  if (ipo_date.empty() || ipo_date.length() != 10)
-    return 0;
+struct ListedSpan {
+  int years = 0;
+  int months = 0;
+  int days = 0;
+  int total_days = 0;
+  bool valid = false;
+};
 
-  // Parse YYYY-MM-DD
-  int year = std::stoi(ipo_date.substr(0, 4));
-  int month = std::stoi(ipo_date.substr(5, 2));
-  int day = std::stoi(ipo_date.substr(8, 2));
+ListedSpan CalculateListedSpan(const StockInfo &info) {
+  ListedSpan span;
+  if (info.ipoDate.length() != 10)
+    return span;
 
-  std::tm tm_ipo = {};
-  tm_ipo.tm_year = year - 1900;
-  tm_ipo.tm_mon = month - 1;
-  tm_ipo.tm_mday = day;
+  using namespace std::chrono;
 
-  auto ipo_time = std::chrono::system_clock::from_time_t(std::mktime(&tm_ipo));
-  auto now = std::chrono::system_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::hours>(now - ipo_time);
+  auto parse = [](const std::string &s) {
+    return year_month_day{year{std::stoi(s.substr(0, 4))},
+                          month{static_cast<unsigned>(std::stoi(s.substr(5, 2)))},
+                          day{static_cast<unsigned>(std::stoi(s.substr(8, 2)))}};
+  };
 
-  return static_cast<int>(duration.count() / 24);
+  const year_month_day ipo = parse(info.ipoDate);
+  // 退市股的在市时长截到退市日, 不跟着今天一起涨
+  const year_month_day end = info.outDate.length() == 10
+                                 ? parse(info.outDate)
+                                 : year_month_day{floor<days>(system_clock::now())};
+  if (!ipo.ok() || !end.ok() || sys_days(end) < sys_days(ipo))
+    return span;
+
+  span.total_days = static_cast<int>((sys_days(end) - sys_days(ipo)).count());
+
+  int y = static_cast<int>(end.year()) - static_cast<int>(ipo.year());
+  int m = static_cast<int>(static_cast<unsigned>(end.month())) -
+          static_cast<int>(static_cast<unsigned>(ipo.month()));
+  int d = static_cast<int>(static_cast<unsigned>(end.day())) -
+          static_cast<int>(static_cast<unsigned>(ipo.day()));
+  if (d < 0) {
+    --m;
+    // 借上一个月的天数 (相对 end)
+    const year_month prev = year_month{end.year(), end.month()} - months{1};
+    d += static_cast<int>(static_cast<unsigned>((prev / last).day()));
+  }
+  if (m < 0) {
+    --y;
+    m += 12;
+  }
+
+  span.years = y;
+  span.months = m;
+  span.days = d;
+  span.valid = true;
+  return span;
 }
 
 // ============================================================================
-// Helper: Calculate market cap (billion yuan)
+// Helper: 总市值 [亿元] — FundamentalService 已按 close × total_shares 算好
 // ============================================================================
 
 float CalculateMarketCap(const StockInfo &info) {
-  // Market cap (billion) = amount (yuan) x 100 / turn (%) / 1e8
-  if (info.amount.empty() || info.turn.empty())
+  if (info.mcap.empty())
     return 0.0;
+  return std::stod(info.mcap);
+}
 
-  try {
-    float amount = std::stod(info.amount);
-    float turn = std::stod(info.turn);
+// ============================================================================
+// Helper: ST level from StockInfo (isST = cn_stock_status.st_status 原值)
+// ============================================================================
 
-    if (turn <= 0)
-      return 0.0;
+// 0 = 正常 (含无基本面), 1 = ST, 2 = *ST (退市风险警示)
+int GetStLevel(const StockInfo *info) {
+  if (!info)
+    return 0;
+  if (info->isST == "2")
+    return 2;
+  if (info->isST == "1")
+    return 1;
+  return 0;
+}
 
-    return amount * 100.0 / turn / 1e8;
-  } catch (...) {
-    return 0.0;
-  }
+const char *GetStLabel(int level) {
+  return level == 2 ? "*ST" : (level == 1 ? "ST" : "-");
+}
+
+// 行业展示名: 优先申万一级名, 缺名回落到代码
+const std::string &GetIndustryDisplay(const StockInfo &info) {
+  return info.ind_name.empty() ? info.ind_code : info.ind_name;
+}
+
+// ============================================================================
+// Helper: "sh.600000" — stock_info 的键
+// ============================================================================
+
+std::string MakeStockKey(const AssetItem &asset) {
+  std::string exchange_lower = asset.exchange;
+  std::transform(exchange_lower.begin(), exchange_lower.end(),
+                 exchange_lower.begin(), ::tolower);
+  return exchange_lower + "." + asset.asset_code;
+}
+
+const StockInfo *FindStockInfo(const AssetItem &asset, const StockInfoMap &stock_info) {
+  auto it = stock_info.find(MakeStockKey(asset));
+  return it != stock_info.end() ? &it->second : nullptr;
 }
 
 // ============================================================================
@@ -75,55 +140,35 @@ float CalculateMarketCap(const StockInfo &info) {
 
 bool ShouldShowAsset(
     const AssetItem &asset,
-    const TableState &state,
-    const StockInfoMap &stock_info) {
+    const StockInfo *info,
+    const TableState &state) {
 
-  // Convert to lowercase format: sh.600000
-  std::string exchange_lower = asset.exchange;
-  std::transform(exchange_lower.begin(), exchange_lower.end(),
-                 exchange_lower.begin(), ::tolower);
-  std::string full_code = exchange_lower + "." + asset.asset_code;
-  const StockInfo *info = nullptr;
-  auto it = stock_info.find(full_code);
-  if (it != stock_info.end()) {
-    info = &it->second;
-  }
-
-  // Filter: missing only
-  if (state.filter_missing_only && asset.get_missing_count() == 0) {
-    return false;
-  }
-
-  // Filter: no missing (opposite of above)
-  if (state.filter_no_missing && asset.get_missing_count() > 0) {
-    return false;
-  }
-
-  // Filter: ST only
-  if (state.filter_st_only) {
-    if (!info || info->isST != "1") {
+  // Filter: ST level (0=正常 1=ST 2=*ST), 多选, 空集合 = 不过滤
+  if (!state.st_filter.empty()) {
+    if (!state.st_filter.count(GetStLevel(info))) {
       return false;
     }
   }
 
-  // Filter: listed only (outDate is empty)
-  if (state.filter_listed_only) {
-    if (!info || !info->outDate.empty()) {
+  // Filter: listed/delisted (0=在市 1=退市, 未知基本面按"不确定"排除), 多选
+  if (!state.listed_filter.empty()) {
+    const int listed_state = !info ? -1 : (info->outDate.empty() ? 0 : 1);
+    if (listed_state < 0 || !state.listed_filter.count(listed_state)) {
       return false;
     }
   }
 
-  // Filter: board
-  if (state.board_filter != BoardType::All) {
+  // Filter: board, 多选, 空集合 = 不过滤
+  if (!state.board_filter.empty()) {
     BoardType asset_board = GetBoardType(asset.asset_code);
-    if (asset_board != state.board_filter) {
+    if (!state.board_filter.count(asset_board)) {
       return false;
     }
   }
 
-  // Filter: industry
+  // Filter: industry, 多选, 空集合 = 不过滤
   if (!state.industry_filter.empty()) {
-    if (!info || info->ind_code != state.industry_filter) {
+    if (!info || !state.industry_filter.count(info->ind_code)) {
       return false;
     }
   }
@@ -140,6 +185,357 @@ bool ShouldShowAsset(
   }
 
   return true;
+}
+
+// ============================================================================
+// 视图缓存: 过滤 + 排序
+// ============================================================================
+
+// 估值列 (PE/PB/PS/PCF) 的统一序: 便宜 → 贵 → 亏得少 → 亏得多
+//   0.1 → 10000 → -10000 → -0.1
+// 负值的绝对值越大 = 亏损相对市值越小, 所以负数区间照样升序; 0 (无意义) 垫底.
+// 排序与截面着色共用这一个口径.
+bool ValuationLess(float va, float vb) {
+  const int ta = (va > 0) ? 0 : (va < 0) ? 1
+                                         : 2;
+  const int tb = (vb > 0) ? 0 : (vb < 0) ? 1
+                                         : 2;
+  return (ta != tb) ? (ta < tb) : (va < vb);
+}
+
+// 基本面字段是 parquet 里的字符串, 可能是空/NaN/超范围 — 转不出来就归到
+// 排序的最低档 (default_val), 不是错误处理
+float SafeStod(const std::string &s, float default_val = -1e9) {
+  if (s.empty())
+    return default_val;
+  try {
+    float val = std::stod(s);
+    if (val != val) // NaN
+      return default_val;
+    if (!std::isfinite(val))
+      return default_val;
+    return val;
+  } catch (const std::invalid_argument &) {
+    return default_val;
+  } catch (const std::out_of_range &) {
+    return default_val;
+  } catch (...) {
+    return default_val;
+  }
+}
+
+// ============================================================================
+// 截面着色: 过滤后 pool 内的名次分位 → 红 → 黄 → 绿
+// ============================================================================
+
+// 该列该行的截面取值; 返回 false = 没有可比的值 (空/NaN/无基本面), 不着色
+bool GetCrossSectionValue(int col, const StockInfo *info, float &out) {
+  if (!info)
+    return false;
+
+  // 与 SafeStod 同样的判据, 只是把"转不出来"报成 false 而不是垫底值 ——
+  // 缺值的行不参与截面, 不能挤占最差那一档
+  auto parse_finite = [&out](const std::string &s) {
+    if (s.empty())
+      return false;
+    try {
+      const float v = std::stof(s);
+      if (!std::isfinite(v))
+        return false;
+      out = v;
+      return true;
+    } catch (...) {
+      return false;
+    }
+  };
+
+  switch (col) {
+  case 6: { // Listed: 在市总天数
+    const ListedSpan span = CalculateListedSpan(*info);
+    out = static_cast<float>(span.total_days);
+    return span.valid;
+  }
+  case 8:
+    return parse_finite(info->peTTM);
+  case 9:
+    return parse_finite(info->pbMRQ);
+  case 10:
+    return parse_finite(info->psTTM);
+  case 11:
+    return parse_finite(info->pcfNcfTTM);
+  case 12:
+    return parse_finite(info->dy1y);
+  case 13:
+    return parse_finite(info->dy3y);
+  case 14:
+    return parse_finite(info->dy5y);
+  case 15: // Cap: 0 = 缺收盘价或股本, 不是"市值为零"
+    out = CalculateMarketCap(*info);
+    return out > 0;
+  default:
+    return false;
+  }
+}
+
+// 估值列越低越好, 其余 (Listed/DY/Cap) 越高越好
+bool IsValuationColumn(int col) { return col >= 8 && col <= 11; }
+
+// 分位 → 颜色. p = 1 最好 (绿), p = 0 最差 (红), 中间过黄.
+// 直接过渡红→绿会在中段压成暗棕, 所以走黄这个中继.
+ImVec4 RampColorVec4(float p) {
+  constexpr ImVec4 kWorst = ImVec4(0.95f, 0.35f, 0.30f, 1.0f);
+  constexpr ImVec4 kMid = ImVec4(0.95f, 0.90f, 0.35f, 1.0f);
+  constexpr ImVec4 kBest = ImVec4(0.40f, 0.95f, 0.45f, 1.0f);
+
+  p = std::clamp(p, 0.0f, 1.0f);
+  const ImVec4 &a = (p < 0.5f) ? kWorst : kMid;
+  const ImVec4 &b = (p < 0.5f) ? kMid : kBest;
+  const float t = (p < 0.5f) ? p * 2.0f : (p - 0.5f) * 2.0f;
+  return ImVec4(a.x + (b.x - a.x) * t,
+                a.y + (b.y - a.y) * t,
+                a.z + (b.z - a.z) * t,
+                1.0f);
+}
+
+// 0 是 cs_colors 里"无有效值"的哨兵, 所以这里必须给足 alpha (不能返回 0)
+ImU32 RampColor(float p) { return ImGui::GetColorU32(RampColorVec4(p)); }
+
+// 用名次分位而不是数值归一化: 估值和市值都是重尾分布, 按 (v-min)/(max-min)
+// 染色的话几个极端值就把其余几千个标的全压成同一个颜色.
+void RebuildCrossSectionColors(TableView &view,
+                               const std::vector<const StockInfo *> &infos) {
+  const size_t n = view.rows.size();
+
+  std::vector<std::pair<float, size_t>> keys; // 取值, 在 rows 里的位置
+  for (int slot = 0; slot < kColoredColumnCount; ++slot) {
+    const int col = kColoredColumns[slot];
+    std::vector<uint32_t> &colors = view.cs_colors[slot];
+    colors.assign(n, 0);
+
+    keys.clear();
+    keys.reserve(n);
+    for (size_t pos = 0; pos < n; ++pos) {
+      float value = 0.0f;
+      if (GetCrossSectionValue(col, infos[view.rows[pos]], value))
+        keys.emplace_back(value, pos);
+    }
+    if (keys.empty())
+      continue;
+
+    // 排完序 keys[0] 最好
+    const bool valuation = IsValuationColumn(col);
+    std::sort(keys.begin(), keys.end(),
+              [valuation](const std::pair<float, size_t> &a,
+                          const std::pair<float, size_t> &b) {
+                return valuation ? ValuationLess(a.first, b.first)
+                                 : a.first > b.first;
+              });
+
+    // 并列同值取平均名次 —— 否则 DY 里成片的 0.00 会被摊成一整条渐变,
+    // 看着像有高低之分
+    const size_t m = keys.size();
+    for (size_t i = 0; i < m;) {
+      size_t j = i + 1;
+      while (j < m && keys[j].first == keys[i].first)
+        ++j;
+
+      const float rank = 0.5f * static_cast<float>(i + j - 1);
+      const float p = (m > 1) ? 1.0f - rank / static_cast<float>(m - 1) : 0.5f;
+      const ImU32 color = RampColor(p);
+      for (size_t k = i; k < j; ++k)
+        colors[keys[k].second] = color;
+
+      i = j;
+    }
+  }
+}
+
+bool ViewIsStale(const TableView &view, const Asset &asset,
+                 const StockInfoMap &stock_info, const TableState &state) {
+  return !view.built ||
+         view.generation != asset.asset_stats_generation ||
+         view.asset_count != asset.items.size() ||
+         view.stock_info_count != stock_info.size() ||
+         view.sort_column != state.sort_column ||
+         view.sort_ascending != state.sort_ascending ||
+         view.st_filter != state.st_filter ||
+         view.listed_filter != state.listed_filter ||
+         view.board_filter != state.board_filter ||
+         view.search_query != state.search_query ||
+         view.industry_filter != state.industry_filter;
+}
+
+void RebuildView(TableView &view, const Asset &asset,
+                 const StockInfoMap &stock_info, const TableState &state) {
+  const size_t count = asset.items.size();
+  assert(asset.asset_stats.size() == count);
+
+  // StockInfo 指针只在本次重建期间用 (基本面整体重载会让它们失效, 所以
+  // 不进 view). 每资产一次 map 查找, 排序时几万次比较都直接吃这份.
+  std::vector<const StockInfo *> infos(count, nullptr);
+
+  view.rows.clear();
+  view.rows.reserve(count);
+  for (size_t id = 0; id < count; ++id) {
+    infos[id] = FindStockInfo(asset.items[id], stock_info);
+    if (ShouldShowAsset(asset.items[id], infos[id], state))
+      view.rows.push_back(id);
+  }
+
+  if (state.sort_column >= 0) {
+    const int col = state.sort_column;
+
+    // 严格弱序: 降序 = 交换实参, 不是对结果取反 (取反在相等时会同时声称
+    // a<b 与 b<a, 那是 UB)
+    auto less = [&](size_t ia, size_t ib) -> bool {
+      const AssetItem &aa = asset.items[ia];
+      const AssetItem &ab = asset.items[ib];
+      const StockInfo *na = infos[ia];
+      const StockInfo *nb = infos[ib];
+      const Asset::AssetStats &sa = asset.asset_stats[ia];
+      const Asset::AssetStats &sb = asset.asset_stats[ib];
+
+      switch (col) {
+      case 0: // Code
+        return aa.asset_code < ab.asset_code;
+      case 1: { // Name
+        const std::string &name_a = (na && !na->name.empty()) ? na->name : aa.asset_code;
+        const std::string &name_b = (nb && !nb->name.empty()) ? nb->name : ab.asset_code;
+        return name_a < name_b;
+      }
+      case 2: // Exchange
+        return aa.exchange < ab.exchange;
+      case 3: // Board
+        return (int)GetBoardType(aa.asset_code) < (int)GetBoardType(ab.asset_code);
+      case 4: // ST: 正常 < ST < *ST
+        return GetStLevel(na) < GetStLevel(nb);
+      case 5: { // DL (Delisted)
+        const bool a_dl = na && na->outDate != "" && na->outDate != "0";
+        const bool b_dl = nb && nb->outDate != "" && nb->outDate != "0";
+        return a_dl < b_dl;
+      }
+      case 6: { // Listed: 在市总天数
+        const int a_days = na ? CalculateListedSpan(*na).total_days : 0;
+        const int b_days = nb ? CalculateListedSpan(*nb).total_days : 0;
+        return a_days < b_days;
+      }
+      case 7: { // Industry (按展示名排, 与列内容一致)
+        static const std::string kEmpty;
+        const std::string &a_ind = na ? GetIndustryDisplay(*na) : kEmpty;
+        const std::string &b_ind = nb ? GetIndustryDisplay(*nb) : kEmpty;
+        return a_ind < b_ind;
+      }
+      case 8: // PE
+        return ValuationLess(na ? SafeStod(na->peTTM) : -1e9,
+                             nb ? SafeStod(nb->peTTM) : -1e9);
+      case 9: // PB
+        return ValuationLess(na ? SafeStod(na->pbMRQ) : -1e9,
+                             nb ? SafeStod(nb->pbMRQ) : -1e9);
+      case 10: // PS
+        return ValuationLess(na ? SafeStod(na->psTTM) : -1e9,
+                             nb ? SafeStod(nb->psTTM) : -1e9);
+      case 11: // PCF
+        return ValuationLess(na ? SafeStod(na->pcfNcfTTM) : -1e9,
+                             nb ? SafeStod(nb->pcfNcfTTM) : -1e9);
+      case 12:   // DY1
+      case 13:   // DY3
+      case 14: { // DY5
+        // 无分红 = 0 排在最低; 缺基本面 / 上市不足一季 = -1 更低
+        std::string StockInfo::*field =
+            col == 12 ? &StockInfo::dy1y
+                      : (col == 13 ? &StockInfo::dy3y : &StockInfo::dy5y);
+        return (na ? SafeStod(na->*field, -1.0f) : -1.0f) <
+               (nb ? SafeStod(nb->*field, -1.0f) : -1.0f);
+      }
+      case 15: // Market Cap
+        return (na ? CalculateMarketCap(*na) : 0) < (nb ? CalculateMarketCap(*nb) : 0);
+      case 16: // Days
+        return sa.total_days < sb.total_days;
+      case 17: // Orders
+        return sa.total_orders < sb.total_orders;
+      case 18: { // Orders% — 无分母的 (北交所/未上市) 恒排在最后
+        const float pa = sa.expected_days > 0 ? sa.orders_coverage_percent() : -1.0f;
+        const float pb = sb.expected_days > 0 ? sb.orders_coverage_percent() : -1.0f;
+        return pa < pb;
+      }
+      default:
+        return false;
+      }
+    };
+
+    std::stable_sort(view.rows.begin(), view.rows.end(),
+                     [&](size_t ia, size_t ib) {
+                       return state.sort_ascending ? less(ia, ib) : less(ib, ia);
+                     });
+  }
+
+  RebuildCrossSectionColors(view, infos);
+
+  view.built = true;
+  view.generation = asset.asset_stats_generation;
+  view.asset_count = count;
+  view.stock_info_count = stock_info.size();
+  view.sort_column = state.sort_column;
+  view.sort_ascending = state.sort_ascending;
+  view.st_filter = state.st_filter;
+  view.listed_filter = state.listed_filter;
+  view.board_filter = state.board_filter;
+  view.search_query = state.search_query;
+  view.industry_filter = state.industry_filter;
+}
+
+// 视图过期就重建. 表格与横截面面板都先调它, 之后共用 state.view.rows.
+void SyncView(TableState &state, const Asset &asset, const StockInfoMap &stock_info) {
+  if (ViewIsStale(state.view, asset, stock_info, state))
+    RebuildView(state.view, asset, stock_info, state);
+}
+
+// ============================================================================
+// Helper: 通用多选下拉框
+// ============================================================================
+// items: (取值, 显示名) 列表; selected 为空集合表示"全选/不过滤" (与
+// ShouldShowAsset 的判据一致, 而不是"什么都不选").
+// 预览文本: 全不选 = "All"; 少量选中 = 逐项列出; 选多了折成 "N selected".
+template <typename T>
+void RenderMultiSelectCombo(
+    const char *label,
+    float width,
+    const std::vector<std::pair<T, std::string>> &items,
+    std::set<T> &selected) {
+
+  std::string preview;
+  if (selected.empty()) {
+    preview = "All";
+  } else {
+    for (const auto &[value, text] : items) {
+      if (selected.count(value)) {
+        if (!preview.empty())
+          preview += ", ";
+        preview += text;
+      }
+    }
+    if (preview.size() > 24) {
+      preview = std::to_string(selected.size()) + " selected";
+    }
+  }
+
+  ImGui::SetNextItemWidth(width);
+  if (ImGui::BeginCombo(label, preview.c_str())) {
+    for (const auto &[value, text] : items) {
+      bool is_selected = selected.count(value) != 0;
+      if (ImGui::Checkbox(text.c_str(), &is_selected)) {
+        if (is_selected)
+          selected.insert(value);
+        else
+          selected.erase(value);
+      }
+    }
+    ImGui::Separator();
+    if (ImGui::SmallButton("All")) {
+      selected.clear();
+    }
+    ImGui::EndCombo();
+  }
 }
 
 // ============================================================================
@@ -161,67 +557,77 @@ void RenderFilterBar(
     state.search_query = search_buf;
   }
 
+  // ST filter: 正常/ST/*ST 多选下拉 (GetStLevel 口径)
+  static const std::vector<std::pair<int, std::string>> st_items = {
+      {0, "正常"}, {1, "ST"}, {2, "*ST"}};
   ImGui::SameLine();
-  ImGui::Checkbox("ST", &state.filter_st_only);
+  RenderMultiSelectCombo("ST##StFilter", 90.0f, st_items, state.st_filter);
 
+  // Listed filter: 在市/退市 多选下拉 (outDate 是否为空)
+  static const std::vector<std::pair<int, std::string>> listed_items = {
+      {0, "在市"}, {1, "退市"}};
   ImGui::SameLine();
-  ImGui::Checkbox("Listed", &state.filter_listed_only);
+  RenderMultiSelectCombo("Listed##ListedFilter", 100.0f, listed_items, state.listed_filter);
 
+  // Board filter: 多选下拉 (不含 All 哨兵, 空集合即等价于全选)
+  static const std::vector<std::pair<BoardType, std::string>> board_items = {
+      {BoardType::Unknown, "Unknown"},
+      {BoardType::SH_Main, "沪主板"},
+      {BoardType::SZ_Main, "深主板"},
+      {BoardType::STAR, "科创板"},
+      {BoardType::ChiNext, "创业板"},
+      {BoardType::BSE, "北交所"}};
   ImGui::SameLine();
-  ImGui::Checkbox("No Missing", &state.filter_no_missing);
+  RenderMultiSelectCombo("Board##BoardFilter", 120.0f, board_items, state.board_filter);
 
-  // Board filter dropdown
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(100.0f);
-  const char *board_names[] = {"All", "Unknown", "沪主板", "深主板", "科创板", "创业板", "北交所"};
-  int current_board = static_cast<int>(state.board_filter);
-  if (ImGui::Combo("Board##BoardFilter", &current_board, board_names, 7)) {
-    state.board_filter = static_cast<BoardType>(current_board);
-  }
-
-  // Industry filter - collect all unique industries
+  // Industry filter - collect all unique industries (多选下拉)
+  // 基本面可能在本页首次渲染之后才载入完, 所以缓存要跟着 stock_info 规模失效,
+  // 否则行业下拉框会永久停在空列表
   static std::vector<std::pair<std::string, std::string>> industries; // code, name
-  static bool industries_cached = false;
+  static size_t industries_cached_count = static_cast<size_t>(-1);
 
-  if (!industries_cached) {
+  if (industries_cached_count != stock_info.size()) {
     std::map<std::string, std::string> ind_map; // code -> name
     for (const auto &asset : assets) {
-      std::string exchange_lower = asset.exchange;
-      std::transform(exchange_lower.begin(), exchange_lower.end(),
-                     exchange_lower.begin(), ::tolower);
-      std::string full_code = exchange_lower + "." + asset.asset_code;
-      auto it = stock_info.find(full_code);
-      if (it != stock_info.end() && !it->second.ind_code.empty()) {
-        ind_map[it->second.ind_code] = it->second.ind_name;
+      const StockInfo *info = FindStockInfo(asset, stock_info);
+      if (info && !info->ind_code.empty()) {
+        ind_map[info->ind_code] = info->ind_name;
       }
     }
     industries.clear();
-    industries.emplace_back("", "All Industries");
     for (const auto &[code, name] : ind_map) {
-      industries.emplace_back(code, code + " - " + name);
+      industries.emplace_back(code, name.empty() ? code : name);
     }
-    industries_cached = true;
+    industries_cached_count = stock_info.size();
   }
 
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(150.0f);
-  if (ImGui::BeginCombo("Industry##IndFilter",
-                        state.industry_filter.empty() ? "All" : state.industry_filter.c_str())) {
-    for (const auto &[code, display] : industries) {
-      bool is_selected = (state.industry_filter == code);
-      if (ImGui::Selectable(display.c_str(), is_selected)) {
-        state.industry_filter = code;
-      }
-      if (is_selected) {
-        ImGui::SetItemDefaultFocus();
-      }
-    }
-    ImGui::EndCombo();
-  }
+  RenderMultiSelectCombo("Industry##IndFilter", 150.0f, industries, state.industry_filter);
 
   // Count & panel toggle
   ImGui::SameLine();
   ImGui::Text("Showing:%zu/%zu", visible_count, total_count);
+
+  ImGui::SameLine();
+  ImGui::BeginGroup();
+  ImGui::TextColored(RampColorVec4(1.0f), "■");
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(RampColorVec4(0.5f), "■");
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(RampColorVec4(0.0f), "■");
+  ImGui::EndGroup();
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "截面色 (Listed / PE / PB / PS / PCF / DY1 / DY3 / DY5 / Cap)\n"
+        "绿 = 好, 红 = 差; 取的是当前 filter 后 pool 内的名次分位\n"
+        "  Listed: 在市越久越绿\n"
+        "  PE/PB/PS/PCF: 越低越绿 (亏损的负值排在最差一端)\n"
+        "  DY1/DY3/DY5: 分红越多越绿\n"
+        "  Cap: 市值越大越绿\n\n"
+        "用名次分位而非数值归一化: 估值/市值是重尾分布,\n"
+        "按 min-max 染色会被几个极端值压成一片同色");
+  }
+
   ImGui::SameLine();
   if (ImGui::SmallButton(state.show_cross_section_panel ? "Hide" : "Show")) {
     state.show_cross_section_panel = !state.show_cross_section_panel;
@@ -233,7 +639,7 @@ void RenderFilterBar(
 // ============================================================================
 
 void RenderDataTable(
-    const std::vector<AssetItem> &assets,
+    const Asset &asset_data,
     const StockInfoMap &stock_info,
     TableState &table_state) {
 
@@ -242,11 +648,11 @@ void RenderDataTable(
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable |
                           ImGuiTableFlags_SizingFixedFit;
 
-  if (!ImGui::BeginTable("AssetsTable", 20, flags)) {
+  if (!ImGui::BeginTable("AssetsTable", 19, flags)) {
     return;
   }
 
-  // Setup columns (20 columns) - use auto width (default)
+  // Setup columns (19 columns) - use auto width (default)
   ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortAscending);
   ImGui::TableSetupColumn("Name");
   ImGui::TableSetupColumn("Exch");
@@ -259,63 +665,61 @@ void RenderDataTable(
   ImGui::TableSetupColumn("PB");
   ImGui::TableSetupColumn("PS");
   ImGui::TableSetupColumn("PCF");
+  ImGui::TableSetupColumn("DY1");
+  ImGui::TableSetupColumn("DY3");
+  ImGui::TableSetupColumn("DY5");
   ImGui::TableSetupColumn("Cap");
   ImGui::TableSetupColumn("Days");
-  ImGui::TableSetupColumn("Snaps");
   ImGui::TableSetupColumn("Orders");
-  ImGui::TableSetupColumn("Snap%");
-  ImGui::TableSetupColumn("Order%");
-  ImGui::TableSetupColumn("Miss_S");
-  ImGui::TableSetupColumn("Miss_O");
+  ImGui::TableSetupColumn("Orders%");
 
   ImGui::TableSetupScrollFreeze(0, 1);
 
   // Custom headers with tooltips
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
   const char *header_labels[] = {"Code", "Name", "Exch", "Board", "ST", "DL", "Listed", "Ind",
-                                 "PE", "PB", "PS", "PCF", "Cap", "Days", "Snaps", "Orders", "Snap%", "Order%", "Miss_S", "Miss_O"};
+                                 "PE", "PB", "PS", "PCF", "DY1", "DY3", "DY5", "Cap", "Days",
+                                 "Orders", "Orders%"};
   const char *header_tooltips[] = {
       "证券代码 (Code)\n股票的唯一标识符\n格式:6位数字(如600000、000001、688001)",
 
-      "股票名称 (Name)\n公司在交易所的简称",
+      "股票名称 (Name)\n公司在交易所的简称 (逐日 PIT)\n来源: cn_stock_instruments 最新交易日\n\n退市股回落到 cn_stock_basic_info 的最后简称",
 
-      "交易所 (Exchange)\nSH = 上海证券交易所 (Shanghai Stock Exchange)\nSZ = 深圳证券交易所 (Shenzhen Stock Exchange)",
+      "交易所 (Exchange)\nSH = 上海证券交易所 (Shanghai Stock Exchange)\nSZ = 深圳证券交易所 (Shenzhen Stock Exchange)\nBJ = 北京证券交易所 (Beijing Stock Exchange)",
 
-      "板块 (Board)\n市场分类:\n- 沪市主板 (600/601/603/605)\n- 深市主板 (000/001/002/003/004)\n- 科创板 (688/689)\n- 创业板 (300/301/302/309)\n- 北交所 (87/88/92)",
+      "板块 (Board)\n市场分类:\n- 沪市主板 (600/601/603/605)\n- 深市主板 (000/001/002/003/004)\n- 科创板 (688/689)\n- 创业板 (300/301/302/309)\n- 北交所 (43/83/87/88/92)",
 
-      "ST股 (Special Treatment)\nisST: 是否为特别处理股票\n1 = 是ST股, 0 = 否\n\n说明:连续两年亏损的股票会被标记为ST\n投资风险较高,涨跌幅限制为±5%",
+      "ST股 (Special Treatment)\n来源: cn_stock_status.st_status (逐日)\n\nST  = 特别处理 (连续两年亏损等), 涨跌幅限制 ±5%\n*ST = 退市风险警示 (风险更高一档)\n-   = 正常\n\n与 Name 列同源同日 (简称前缀 ↔ 本列取值 严格一致)",
 
       "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\noutDate字段记录退市日期",
 
-      "上市天数 (Listed Days)\n从IPO日期到现在的天数\n= 当前日期 - ipoDate\n可用于判断新股或老股",
+      "在市时间 (Listed Duration)\n紧凑格式 年/月/日 — 如 11/02/06 = 11年2个月6天\n\n区间: ipoDate → outDate (退市股截到退市日) 或今天\nhover 单元格可看起止日期与在市总天数\n排序与横截面分析口径为在市总天数",
 
-      "行业 (Industry)\n所属行业分类代码 (ind_code)\n由交易所或数据提供商分类",
+      "行业 (Industry)\n申万一级行业名称 (industry_level1_name)\n来源: cn_stock_industry_component 最新月度快照\n\nhover 单元格可看行业代码 (ind_code)",
 
       "滚动市盈率 (PE TTM)\npeTTM = Trailing Twelve Months P/E Ratio\n= 股票收盘价 / 每股盈余TTM\n= (收盘价 x 总股本) / 归属母公司股东净利润TTM\n\nTTM = 过去12个月滚动数据\n反映公司盈利能力,数值越低估值越便宜",
 
-      "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 股票收盘价 / 每股净资产\n= 总市值 / (归属母公司股东权益 - 其他权益工具)\n\nMRQ = 最近季度数据\n反映账面价值,通常>1,<1可能破净",
+      "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 总市值 / 归属母公司股东权益MRQ\n= (收盘价 x 总股本) / total_equity_to_parent_shareholders\n\nMRQ = 最新报告期 (max report_date 的最新可见行)\n反映账面价值,通常>1,<1可能破净",
 
       "滚动市销率 (PS TTM)\npsTTM = Price-to-Sales Ratio (TTM)\n= 股票收盘价 / 每股销售额\n= (收盘价 x 总股本) / 营业总收入TTM\n\n反映每单位营收对应的市值\n适用于尚未盈利但有营收的公司",
 
-      "滚动市现率 (PCF TTM)\npcfNcfTTM = Price-to-Cash-Flow Ratio (TTM)\n= 股票收盘价 / 每股现金流TTM\n= (收盘价 x 总股本) / 现金及现金等价物净增加额TTM\n\n反映现金流创造能力\n比PE更难以通过会计手段操纵",
+      "滚动市现率 (PCF TTM)\npcfNcfTTM = Price-to-Cash-Flow Ratio (TTM)\n= 总市值 / 经营活动现金流量净额TTM\n= (收盘价 x 总股本) / net_cffoa_ttm\n\n注意分母是经营现金流, 不是现金及现金等价物净增加额\n烧钱(经营现金流为负) 保留负值, 不置空\n\n反映现金流创造能力\n比PE更难以通过会计手段操纵",
 
-      "总市值 (Market Cap)\n计算公式:市值(亿元) = 成交额 x 100 / 换手率 / 1亿\n= amount x 100 / turn / 1e8\n\n说明:\n- amount = 成交额(元)\n- turn = 换手率(%)\n- 通过成交额和换手率反推流通市值\n- 换手率 = 成交量/流通股数x100%\n- 流通市值 = 成交额/换手率x100",
+      "股息率 近1年 (Dividend Yield, 年化)\n= 近365日税前分红总额 / 总市值 x 100%\n\n说明:\n- 单位: %\n- 窗口以分红公告日 (publish_date) 锚定, 非除权日\n- 口径与 L1 特征 dy_raw 一致\n- 0.00 = 窗口内确实没有分红公告 (非缺失)",
+
+      "股息率 近3年 (年化平均)\n= 近3年(1095日)税前分红总额 / 年数 / 总市值 x 100%\n\n说明:\n- 已年化, 可与 DY1 / DY5 直接横向比较\n- 上市不足3年的按实际上市年数年化, 不被系统性摊薄\n- 上市不足一个季度 → 留空 (年化无意义)\n- DY3 明显低于 DY1 = 近年才开始分红",
+
+      "股息率 近5年 (年化平均)\n= 近5年(1825日)税前分红总额 / 年数 / 总市值 x 100%\n\n说明:\n- 已年化, 可与 DY1 / DY3 直接横向比较\n- 上市不足5年的按实际上市年数年化\n- DY1 ≈ DY3 ≈ DY5 = 长期稳定分红",
+
+      "总市值 (Market Cap)\n= 收盘价 x 总股本 / 1亿\n= close x total_shares (不复权真价)\n\n说明:\n- 单位: 亿元\n- 与 PE/PB/PS/PCF/DY 的分子同源\n- 数据来自 cn_stock_real_bar1d.close + cn_stock_shares.total_shares",
 
       "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= date_info.size()\n可用于判断数据完整性",
 
-      "快照总数 (Total Snapshots)\n所有交易日的快照记录总数量\n= Σ snapshot_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2行情快照的总数据量",
+      "逐笔总数 (Total Orders)\n所有交易日的逐笔记录总数量 (委托+成交合并后)\n= Σ order_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 条数由文件头 raw_size 推出, 扫描时一并读到",
 
-      "订单总数 (Total Orders)\n所有交易日的逐笔委托记录总数量\n= Σ order_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2逐笔委托的总数据量",
+      "逐笔完整性 (Orders Coverage)\n回测区间内已编码的交易日占比\n= (应有天数 - 缺失天数) / 应有天数\n\n分母是该标的\"本该有逐笔\"的交易日:\n已上市未退市, 且排除当日全天停牌\n(北交所不在 L2 覆盖范围, 整体留空)\n\n与 Browser 页的完整性、Encode 页的缺失表同源\nhover 单元格可看缺失天数"};
 
-      "快照覆盖率 (Snapshot Coverage %)\n= (有编码快照数据的天数 / 总交易日数) x 100%\n= snapshots_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码快照的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2快照数据的完整性",
-
-      "订单覆盖率 (Order Coverage %)\n= (有编码订单数据的天数 / 总交易日数) x 100%\n= orders_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码逐笔委托的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2逐笔委托数据的完整性",
-
-      "快照缺失天数 (Missing Snapshot Days)\n在交易日范围内缺失快照数据的天数\n= 数据库总交易日数 - 有snapshots文件的天数\n\n说明:\n- 数值越大说明快照数据缺失越严重\n- 需要补充编码或检查archive源文件",
-
-      "订单缺失天数 (Missing Order Days)\n在交易日范围内缺失订单数据的天数\n= 数据库总交易日数 - 有orders文件的天数\n\n说明:\n- 数值越大说明订单数据缺失越严重\n- 需要补充编码或检查archive源文件"};
-
-  for (int col = 0; col < 20; col++) {
+  for (int col = 0; col < 19; col++) {
     ImGui::TableSetColumnIndex(col);
     ImGui::PushID(col);
     ImGui::TableHeader(header_labels[col]);
@@ -327,209 +731,18 @@ void RenderDataTable(
     ImGui::PopID();
   }
 
-  // Build filtered asset list for sorting
-  struct AssetRow {
-    const AssetItem *asset;
-    const StockInfo *info;
-    std::string full_code;
-  };
-
-  std::vector<AssetRow> filtered_rows;
-  filtered_rows.reserve(assets.size());
-
-  for (const auto &asset : assets) {
-    if (!ShouldShowAsset(asset, table_state, stock_info))
-      continue;
-
-    std::string exchange_lower = asset.exchange;
-    std::transform(exchange_lower.begin(), exchange_lower.end(),
-                   exchange_lower.begin(), ::tolower);
-    std::string full_code = exchange_lower + "." + asset.asset_code;
-    const StockInfo *info = nullptr;
-    auto it = stock_info.find(full_code);
-    if (it != stock_info.end()) {
-      info = &it->second;
-    }
-    filtered_rows.push_back({&asset, info, full_code});
-  }
-
-  // Safe string to float conversion with extra safety for sorting
-  auto safe_stod = [](const std::string &s, float default_val = -1e9) -> float {
-    if (s.empty())
-      return default_val;
-    try {
-      float val = std::stod(s);
-      // Extra safety: check for NaN explicitly before isfinite
-      if (val != val)
-        return default_val; // NaN check
-      if (!std::isfinite(val))
-        return default_val;
-      return val;
-    } catch (const std::invalid_argument &) {
-      return default_val;
-    } catch (const std::out_of_range &) {
-      return default_val;
-    } catch (...) {
-      return default_val;
-    }
-  };
-
-  // Apply sorting (restore from table_state if needed)
+  // 排序规则的变化由 ImGui 的 SpecsDirty 告知; 真正的重排在 RebuildView 里,
+  // 只在规则/过滤/数据代数变化时做一次 (见 TableView).
   if (ImGuiTableSortSpecs *sort_specs = ImGui::TableGetSortSpecs()) {
-    if (sort_specs->SpecsDirty || table_state.sort_column >= 0) {
-      int col = table_state.sort_column;
-      bool ascending = table_state.sort_ascending;
-
-      // Update from ImGui if dirty
-      if (sort_specs->SpecsDirty && sort_specs->SpecsCount > 0) {
-        const auto &spec = sort_specs->Specs[0];
-        col = spec.ColumnIndex;
-        ascending = spec.SortDirection == ImGuiSortDirection_Ascending;
-        table_state.sort_column = col;
-        table_state.sort_ascending = ascending;
-      }
-
-      if (col >= 0) {
-        std::stable_sort(filtered_rows.begin(), filtered_rows.end(),
-                         [col, ascending, &safe_stod](const AssetRow &a, const AssetRow &b) -> bool {
-                           try {
-                             bool result = false;
-
-                             switch (col) {
-                             case 0:
-                               result = a.asset->asset_code < b.asset->asset_code;
-                               break;  // Code
-                             case 1: { // Name
-                               std::string name_a = a.info && !a.info->name.empty() ? a.info->name : a.asset->asset_code;
-                               std::string name_b = b.info && !b.info->name.empty() ? b.info->name : b.asset->asset_code;
-                               result = name_a < name_b;
-                               break;
-                             }
-                             case 2:
-                               result = a.asset->exchange < b.asset->exchange;
-                               break; // Exchange
-                             case 3:
-                               result = (int)GetBoardType(a.asset->asset_code) < (int)GetBoardType(b.asset->asset_code);
-                               break;  // Board
-                             case 4: { // ST
-                               bool a_st = a.info && a.info->isST == "1";
-                               bool b_st = b.info && b.info->isST == "1";
-                               result = a_st < b_st;
-                               break;
-                             }
-                             case 5: { // DL (Delisted)
-                               bool a_dl = a.info && a.info->outDate != "" && a.info->outDate != "0";
-                               bool b_dl = b.info && b.info->outDate != "" && b.info->outDate != "0";
-                               result = a_dl < b_dl;
-                               break;
-                             }
-                             case 6: { // Listed days
-                               int a_days = (a.info && !a.info->ipoDate.empty()) ? CalculateDaysSinceIPO(a.info->ipoDate) : 0;
-                               int b_days = (b.info && !b.info->ipoDate.empty()) ? CalculateDaysSinceIPO(b.info->ipoDate) : 0;
-                               result = a_days < b_days;
-                               break;
-                             }
-                             case 7: { // Industry
-                               std::string a_ind = a.info ? a.info->ind_code : "";
-                               std::string b_ind = b.info ? b.info->ind_code : "";
-                               result = a_ind < b_ind;
-                               break;
-                             }
-                             case 8: { // PE
-                               // Valuation sorting: positive (cheap to expensive) -> negative (high risk) -> invalid
-                               float a_val = a.info ? safe_stod(a.info->peTTM) : -1e9;
-                               float b_val = b.info ? safe_stod(b.info->peTTM) : -1e9;
-                               int a_tier = (a_val > 0) ? 0 : (a_val < 0) ? 1
-                                                                          : 2;
-                               int b_tier = (b_val > 0) ? 0 : (b_val < 0) ? 1
-                                                                          : 2;
-                               result = (a_tier != b_tier) ? (a_tier < b_tier) : (a_val < b_val);
-                               break;
-                             }
-                             case 9: { // PB
-                               // Valuation sorting: positive (cheap to expensive) -> negative (high risk) -> invalid
-                               float a_val = a.info ? safe_stod(a.info->pbMRQ) : -1e9;
-                               float b_val = b.info ? safe_stod(b.info->pbMRQ) : -1e9;
-                               int a_tier = (a_val > 0) ? 0 : (a_val < 0) ? 1
-                                                                          : 2;
-                               int b_tier = (b_val > 0) ? 0 : (b_val < 0) ? 1
-                                                                          : 2;
-                               result = (a_tier != b_tier) ? (a_tier < b_tier) : (a_val < b_val);
-                               break;
-                             }
-                             case 10: { // PS
-                               // Valuation sorting: positive (cheap to expensive) -> negative (high risk) -> invalid
-                               float a_val = a.info ? safe_stod(a.info->psTTM) : -1e9;
-                               float b_val = b.info ? safe_stod(b.info->psTTM) : -1e9;
-                               int a_tier = (a_val > 0) ? 0 : (a_val < 0) ? 1
-                                                                          : 2;
-                               int b_tier = (b_val > 0) ? 0 : (b_val < 0) ? 1
-                                                                          : 2;
-                               result = (a_tier != b_tier) ? (a_tier < b_tier) : (a_val < b_val);
-                               break;
-                             }
-                             case 11: { // PCF
-                               // Valuation sorting: positive (cheap to expensive) -> negative (high risk) -> invalid
-                               float a_val = a.info ? safe_stod(a.info->pcfNcfTTM) : -1e9;
-                               float b_val = b.info ? safe_stod(b.info->pcfNcfTTM) : -1e9;
-                               int a_tier = (a_val > 0) ? 0 : (a_val < 0) ? 1
-                                                                          : 2;
-                               int b_tier = (b_val > 0) ? 0 : (b_val < 0) ? 1
-                                                                          : 2;
-                               result = (a_tier != b_tier) ? (a_tier < b_tier) : (a_val < b_val);
-                               break;
-                             }
-                             case 12: { // Market Cap
-                               float a_cap = a.info ? CalculateMarketCap(*a.info) : 0;
-                               float b_cap = b.info ? CalculateMarketCap(*b.info) : 0;
-                               result = a_cap < b_cap;
-                               break;
-                             }
-                             case 13:
-                               result = a.asset->get_total_trading_days() < b.asset->get_total_trading_days();
-                               break; // Days
-                             case 14:
-                               result = a.asset->get_total_snapshot_count() < b.asset->get_total_snapshot_count();
-                               break; // Snaps
-                             case 15:
-                               result = a.asset->get_total_order_count() < b.asset->get_total_order_count();
-                               break;   // Orders
-                             case 16: { // Snap%
-                               float a_pct = a.asset->get_total_trading_days() > 0 ? (float)a.asset->get_snapshots_encoded_count() / a.asset->get_total_trading_days() : 0;
-                               float b_pct = b.asset->get_total_trading_days() > 0 ? (float)b.asset->get_snapshots_encoded_count() / b.asset->get_total_trading_days() : 0;
-                               result = a_pct < b_pct;
-                               break;
-                             }
-                             case 17: { // Order%
-                               float a_pct = a.asset->get_total_trading_days() > 0 ? (float)a.asset->get_orders_encoded_count() / a.asset->get_total_trading_days() : 0;
-                               float b_pct = b.asset->get_total_trading_days() > 0 ? (float)b.asset->get_orders_encoded_count() / b.asset->get_total_trading_days() : 0;
-                               result = a_pct < b_pct;
-                               break;
-                             }
-                             case 18: { // Miss_S
-                               size_t a_miss = a.asset->get_total_trading_days() - a.asset->get_snapshots_encoded_count();
-                               size_t b_miss = b.asset->get_total_trading_days() - b.asset->get_snapshots_encoded_count();
-                               result = a_miss < b_miss;
-                               break;
-                             }
-                             case 19: { // Miss_O
-                               size_t a_miss = a.asset->get_total_trading_days() - a.asset->get_orders_encoded_count();
-                               size_t b_miss = b.asset->get_total_trading_days() - b.asset->get_orders_encoded_count();
-                               result = a_miss < b_miss;
-                               break;
-                             }
-                             }
-
-                             return ascending ? result : !result;
-                           } catch (...) {
-                             // If comparison fails, maintain consistent ordering by comparing addresses
-                             return &a < &b;
-                           }
-                         });
-      }
-      sort_specs->SpecsDirty = false;
+    if (sort_specs->SpecsDirty && sort_specs->SpecsCount > 0) {
+      const auto &spec = sort_specs->Specs[0];
+      table_state.sort_column = spec.ColumnIndex;
+      table_state.sort_ascending = spec.SortDirection == ImGuiSortDirection_Ascending;
     }
+    sort_specs->SpecsDirty = false;
   }
+
+  SyncView(table_state, asset_data, stock_info);
 
   // Helper lambda to handle column highlight and click (left-click to trigger analysis)
   auto handle_column_click = [&table_state](int col_idx) {
@@ -546,11 +759,26 @@ void RenderDataTable(
   // Get hovered column for highlight
   int hovered_col = ImGui::TableGetHoveredColumn();
 
+  // 截面色: cs_colors 与 view.rows 同序, 直接按行位置取 (见 TableView).
+  // 返回 true = 已 PushStyleColor, 调用方渲完要 Pop.
+  auto push_cs_color = [&table_state](int col, int row) {
+    const int slot = ColoredColumnSlot(col);
+    assert(slot >= 0);
+    const std::vector<uint32_t> &colors = table_state.view.cs_colors[slot];
+    assert(colors.size() == table_state.view.rows.size());
+    if (colors[row] == 0)
+      return false;
+    ImGui::PushStyleColor(ImGuiCol_Text, colors[row]);
+    return true;
+  };
+
   // Render rows
   int row_idx = 0;
-  for (const auto &row : filtered_rows) {
-    const AssetItem &asset = *row.asset;
-    const StockInfo *info = row.info;
+  for (const size_t id : table_state.view.rows) {
+    const AssetItem &asset = asset_data.items[id];
+    const Asset::AssetStats &stats = asset_data.asset_stats[id];
+    // StockInfo 每帧现查 (基本面可能整体重载, 缓存指针会失效)
+    const StockInfo *info = FindStockInfo(asset, stock_info);
 
     ImGui::TableNextRow();
     ImGui::PushID(row_idx);
@@ -586,7 +814,9 @@ void RenderDataTable(
     if (hovered_col == 2) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    ImGui::TextColored(asset.exchange == "SH" ? COLOR_SH : COLOR_SZ,
+    ImGui::TextColored(asset.exchange == "SH"   ? COLOR_SH
+                       : asset.exchange == "SZ" ? COLOR_SZ
+                                                : COLOR_BJ,
                        "%s", asset.exchange.c_str());
     handle_column_click(2);
 
@@ -604,8 +834,9 @@ void RenderDataTable(
     if (hovered_col == 4) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    if (info && info->isST == "1") {
-      ImGui::TextColored(COLOR_RED, "ST");
+    int st_level = GetStLevel(info);
+    if (st_level > 0) {
+      ImGui::TextColored(COLOR_RED, "%s", GetStLabel(st_level));
     } else {
       ImGui::Text("-");
     }
@@ -631,9 +862,18 @@ void RenderDataTable(
     if (hovered_col == 6) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    if (info && !info->ipoDate.empty()) {
-      int days = CalculateDaysSinceIPO(info->ipoDate);
-      ImGui::Text("%d", days);
+    ListedSpan span = info ? CalculateListedSpan(*info) : ListedSpan{};
+    if (span.valid) {
+      const bool cs = push_cs_color(6, row_idx);
+      ImGui::Text("%02d/%02d/%02d", span.years, span.months, span.days);
+      if (cs)
+        ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("上市 %s → %s\n在市 %d 年 %d 月 %d 天 (共 %d 天)",
+                          info->ipoDate.c_str(),
+                          info->outDate.empty() ? "至今" : info->outDate.c_str(),
+                          span.years, span.months, span.days, span.total_days);
+      }
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
@@ -644,10 +884,10 @@ void RenderDataTable(
     if (hovered_col == 7) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    if (info && !info->ind_code.empty()) {
-      ImGui::Text("%s", info->ind_code.c_str());
-      if (ImGui::IsItemHovered() && !info->ind_name.empty()) {
-        ImGui::SetTooltip("%s", info->ind_name.c_str());
+    if (info && !GetIndustryDisplay(*info).empty()) {
+      ImGui::Text("%s", GetIndustryDisplay(*info).c_str());
+      if (ImGui::IsItemHovered() && !info->ind_code.empty()) {
+        ImGui::SetTooltip("%s", info->ind_code.c_str());
       }
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
@@ -663,7 +903,10 @@ void RenderDataTable(
       try {
         float pe = std::stod(info->peTTM);
         if (std::isfinite(pe)) {
+          const bool cs = push_cs_color(8, row_idx);
           ImGui::Text("%.1f", pe);
+          if (cs)
+            ImGui::PopStyleColor();
         } else {
           ImGui::TextColored(COLOR_GRAY, "-");
         }
@@ -684,7 +927,10 @@ void RenderDataTable(
       try {
         float pb = std::stod(info->pbMRQ);
         if (std::isfinite(pb)) {
+          const bool cs = push_cs_color(9, row_idx);
           ImGui::Text("%.2f", pb);
+          if (cs)
+            ImGui::PopStyleColor();
         } else {
           ImGui::TextColored(COLOR_GRAY, "-");
         }
@@ -705,7 +951,10 @@ void RenderDataTable(
       try {
         float ps = std::stod(info->psTTM);
         if (std::isfinite(ps)) {
+          const bool cs = push_cs_color(10, row_idx);
           ImGui::Text("%.2f", ps);
+          if (cs)
+            ImGui::PopStyleColor();
         } else {
           ImGui::TextColored(COLOR_GRAY, "-");
         }
@@ -726,7 +975,10 @@ void RenderDataTable(
       try {
         float pcf = std::stod(info->pcfNcfTTM);
         if (std::isfinite(pcf)) {
+          const bool cs = push_cs_color(11, row_idx);
           ImGui::Text("%.1f", pcf);
+          if (cs)
+            ImGui::PopStyleColor();
         } else {
           ImGui::TextColored(COLOR_GRAY, "-");
         }
@@ -738,53 +990,64 @@ void RenderDataTable(
     }
     handle_column_click(11);
 
-    // Col 12: Market Cap (billion yuan)
-    ImGui::TableSetColumnIndex(12);
-    if (hovered_col == 12) {
+    // Col 12/13/14: DY 1y/3y/5y (%), 三列同构 — 颜色走截面分位 (分红越多越绿)
+    auto render_dy = [&](int col, const std::string *val) {
+      ImGui::TableSetColumnIndex(col);
+      if (hovered_col == col) {
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
+      }
+      if (val && !val->empty()) {
+        float dy = std::stod(*val);
+        const bool cs = push_cs_color(col, row_idx);
+        ImGui::Text("%.2f", dy);
+        if (cs)
+          ImGui::PopStyleColor();
+      } else {
+        ImGui::TextColored(COLOR_GRAY, "-");
+      }
+      handle_column_click(col);
+    };
+    render_dy(12, info ? &info->dy1y : nullptr);
+    render_dy(13, info ? &info->dy3y : nullptr);
+    render_dy(14, info ? &info->dy5y : nullptr);
+
+    // Col 15: Market Cap (亿元)
+    ImGui::TableSetColumnIndex(15);
+    if (hovered_col == 15) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info) {
       float cap = CalculateMarketCap(*info);
       if (cap > 0) {
+        const bool cs = push_cs_color(15, row_idx);
         ImGui::Text("%.1f", cap);
+        if (cs)
+          ImGui::PopStyleColor();
       } else {
         ImGui::TextColored(COLOR_GRAY, "-");
       }
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(12);
+    handle_column_click(15);
 
-    // Col 13: Trading Days
-    ImGui::TableSetColumnIndex(13);
-    if (hovered_col == 13) {
+    // Col 16: Trading Days
+    // 以下三列的统计都取自 Asset::asset_stats — 逐帧遍历 date_info 会把
+    // 帧时间拖到几百毫秒 (见 TableView 处的说明)
+    ImGui::TableSetColumnIndex(16);
+    if (hovered_col == 16) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    size_t total_days = asset.get_total_trading_days();
+    size_t total_days = stats.total_days;
     ImGui::Text("%zu", total_days);
-    handle_column_click(13);
+    handle_column_click(16);
 
-    // Col 14: Total Snapshots
-    ImGui::TableSetColumnIndex(14);
-    if (hovered_col == 14) {
+    // Col 17: Total Orders
+    ImGui::TableSetColumnIndex(17);
+    if (hovered_col == 17) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    size_t total_snaps = asset.get_total_snapshot_count();
-    if (total_snaps > 1000000) {
-      ImGui::Text("%.2fM", total_snaps / 1000000.0);
-    } else if (total_snaps > 1000) {
-      ImGui::Text("%.1fK", total_snaps / 1000.0);
-    } else {
-      ImGui::Text("%zu", total_snaps);
-    }
-    handle_column_click(14);
-
-    // Col 15: Total Orders
-    ImGui::TableSetColumnIndex(15);
-    if (hovered_col == 15) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    size_t total_orders = asset.get_total_order_count();
+    size_t total_orders = stats.total_orders;
     if (total_orders > 1000000) {
       ImGui::Text("%.2fM", total_orders / 1000000.0);
     } else if (total_orders > 1000) {
@@ -792,47 +1055,28 @@ void RenderDataTable(
     } else {
       ImGui::Text("%zu", total_orders);
     }
-    handle_column_click(15);
-
-    // Col 16: Snapshots Encoded %
-    ImGui::TableSetColumnIndex(16);
-    if (hovered_col == 16) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    size_t snap_encoded = asset.get_snapshots_encoded_count();
-    float snap_pct = total_days > 0 ? (float)snap_encoded / total_days * 100.0 : 0.0;
-    ImVec4 snap_color = snap_pct >= 95.0 ? COLOR_GREEN : (snap_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
-    ImGui::TextColored(snap_color, "%.1f%%", snap_pct);
-    handle_column_click(16);
-
-    // Col 17: Orders Encoded %
-    ImGui::TableSetColumnIndex(17);
-    if (hovered_col == 17) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    size_t ord_encoded = asset.get_orders_encoded_count();
-    float ord_pct = total_days > 0 ? (float)ord_encoded / total_days * 100.0 : 0.0;
-    ImVec4 ord_color = ord_pct >= 95.0 ? COLOR_GREEN : (ord_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
-    ImGui::TextColored(ord_color, "%.1f%%", ord_pct);
     handle_column_click(17);
 
-    // Col 18: Missing Snapshot Days
+    // Col 18: Orders Coverage
+    // expected_days == 0 = 该标的在回测区间内本就不该有数据 (北交所 / 尚未
+    // 上市 / 已退市), 那不是缺口, 留空而不是 0%.
     ImGui::TableSetColumnIndex(18);
     if (hovered_col == 18) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    size_t snap_missing = total_days - snap_encoded;
-    ImGui::TextColored(snap_missing > 0 ? COLOR_YELLOW : COLOR_GREEN, "%zu", snap_missing);
-    handle_column_click(18);
-
-    // Col 19: Missing Order Days
-    ImGui::TableSetColumnIndex(19);
-    if (hovered_col == 19) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
+    if (stats.expected_days == 0) {
+      ImGui::TextColored(COLOR_GRAY, "-");
+    } else {
+      const float pct = stats.orders_coverage_percent();
+      const ImVec4 color = pct >= 99.9f   ? ImVec4(0.3f, 0.95f, 0.4f, 1.0f)
+                           : pct >= 95.0f ? ImVec4(1.0f, 1.0f, 0.0f, 1.0f)
+                                          : ImVec4(1.0f, 0.5f, 0.0f, 1.0f);
+      ImGui::TextColored(color, "%.1f%%", pct);
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Missing %zu of %zu trading days", stats.orders_missing, stats.expected_days);
+      }
     }
-    size_t ord_missing = total_days - ord_encoded;
-    ImGui::TextColored(ord_missing > 0 ? COLOR_YELLOW : COLOR_GREEN, "%zu", ord_missing);
-    handle_column_click(19);
+    handle_column_click(18);
 
     ImGui::PopID();
     row_idx++;
@@ -846,14 +1090,14 @@ void RenderDataTable(
 // ============================================================================
 
 static void RenderNumericAnalysis(
-    const std::vector<AssetItem> &assets,
+    const Asset &asset_data,
     const StockInfoMap &stock_info,
     const TableState &table_state,
     int col_idx,
     const char *col_name);
 
 static void RenderCategoricalAnalysis(
-    const std::vector<AssetItem> &assets,
+    const Asset &asset_data,
     const StockInfoMap &stock_info,
     const TableState &table_state,
     int col_idx,
@@ -868,9 +1112,8 @@ static ColumnDataType GetColumnDataType(int col_idx) {
   if (col_idx == 3 || col_idx == 4 || col_idx == 5 || col_idx == 7) {
     return ColumnDataType::Categorical;
   }
-  // Numeric: Listed Days(6), PE(8), PB(9), PS(10), PCF(11), Market Cap(12),
-  //          Trading Days(13), Snapshot%(14), Order%(15), Missing(16),
-  //          Total Snapshots(17), Total Orders(18)
+  // Numeric: Listed Days(6), PE(8), PB(9), PS(10), PCF(11), DY1/3/5(12,13,14),
+  //          Market Cap(15), Trading Days(16), Total Orders(17), Orders%(18)
   if (col_idx >= 6 && col_idx <= 18) {
     return ColumnDataType::Numeric;
   }
@@ -883,7 +1126,7 @@ static ColumnDataType GetColumnDataType(int col_idx) {
 // ============================================================================
 
 void RenderCrossSectionPanel(
-    const std::vector<AssetItem> &assets,
+    const Asset &asset_data,
     const StockInfoMap &stock_info,
     const TableState &table_state) {
 
@@ -894,12 +1137,13 @@ void RenderCrossSectionPanel(
 
   // Column names for display
   const char *col_names[] = {
-      "Code", "Name", "Exchange", "Board", "ST", "DL", "Listed Days", "Industry",
-      "PE(TTM)", "PB(MRQ)", "PS(TTM)", "PCF", "Market Cap", "Trading Days",
-      "Snapshot %", "Order %", "Missing", "Total Snapshots", "Total Orders"};
+      "Code", "Name", "Exchange", "Board", "ST", "DL", "Listed Days (在市总天数)", "Industry",
+      "PE(TTM)", "PB(MRQ)", "PS(TTM)", "PCF", "DY 近1年 (年化 %)", "DY 近3年 (年化 %)",
+      "DY 近5年 (年化 %)", "Market Cap (亿元)", "Trading Days",
+      "Total Orders", "Orders % (回测区间完整性)"};
 
   int col_idx = table_state.selected_column_idx;
-  if (col_idx >= 20) {
+  if (col_idx >= 19) {
     ImGui::Text("Invalid column index");
     return;
   }
@@ -910,9 +1154,9 @@ void RenderCrossSectionPanel(
   ColumnDataType data_type = GetColumnDataType(col_idx);
 
   if (data_type == ColumnDataType::Categorical) {
-    RenderCategoricalAnalysis(assets, stock_info, table_state, col_idx, col_names[col_idx]);
+    RenderCategoricalAnalysis(asset_data, stock_info, table_state, col_idx, col_names[col_idx]);
   } else {
-    RenderNumericAnalysis(assets, stock_info, table_state, col_idx, col_names[col_idx]);
+    RenderNumericAnalysis(asset_data, stock_info, table_state, col_idx, col_names[col_idx]);
   }
 }
 
@@ -921,7 +1165,7 @@ void RenderCrossSectionPanel(
 // ============================================================================
 
 static void RenderNumericAnalysis(
-    const std::vector<AssetItem> &assets,
+    const Asset &asset_data,
     const StockInfoMap &stock_info,
     const TableState &table_state,
     int col_idx,
@@ -933,29 +1177,22 @@ static void RenderNumericAnalysis(
   std::vector<float> values;
   std::vector<std::string> codes;
 
-  for (const auto &asset : assets) {
-    if (!ShouldShowAsset(asset, table_state, stock_info))
-      continue;
-
-    std::string exchange_lower = asset.exchange;
-    std::transform(exchange_lower.begin(), exchange_lower.end(),
-                   exchange_lower.begin(), ::tolower);
-    std::string full_code = exchange_lower + "." + asset.asset_code;
-    const StockInfo *info = nullptr;
-    auto it = stock_info.find(full_code);
-    if (it != stock_info.end()) {
-      info = &it->second;
-    }
+  // 过滤结果直接用表格的缓存视图 (见 TableView)
+  for (const size_t id : table_state.view.rows) {
+    const AssetItem &asset = asset_data.items[id];
+    const Asset::AssetStats &stats = asset_data.asset_stats[id];
+    const StockInfo *info = FindStockInfo(asset, stock_info);
 
     std::string display_name = info && !info->name.empty() ? info->name : asset.asset_code;
     float value = std::numeric_limits<float>::quiet_NaN();
     bool is_valid = false;
 
     switch (col_idx) {
-    case 6: // Listed Days
-      if (info && !info->ipoDate.empty()) {
-        value = CalculateDaysSinceIPO(info->ipoDate);
-        is_valid = (value > 0);
+    case 6: // Listed (在市总天数)
+      if (info) {
+        ListedSpan span = CalculateListedSpan(*info);
+        value = span.total_days;
+        is_valid = span.valid;
       }
       break;
     case 8: // PE
@@ -994,39 +1231,36 @@ static void RenderNumericAnalysis(
         }
       }
       break;
-    case 12: // Market Cap
+    case 12:   // DY1
+    case 13:   // DY3
+    case 14: { // DY5
+      const std::string *dy =
+          !info ? nullptr
+                : (col_idx == 12 ? &info->dy1y
+                                 : (col_idx == 13 ? &info->dy3y : &info->dy5y));
+      if (dy && !dy->empty()) {
+        value = std::stod(*dy);
+        is_valid = true;
+      }
+      break;
+    }
+    case 15: // Market Cap
       if (info) {
         value = CalculateMarketCap(*info);
         is_valid = (value > 0);
       }
       break;
-    case 13: // Trading Days
-      value = asset.get_total_trading_days();
+    case 16: // Trading Days
+      value = stats.total_days;
       is_valid = true;
       break;
-    case 14: // Total Snapshots
-      value = asset.get_total_snapshot_count();
+    case 17: // Total Orders
+      value = stats.total_orders;
       is_valid = true;
       break;
-    case 15: // Total Orders
-      value = asset.get_total_order_count();
-      is_valid = true;
-      break;
-    case 16: // Snapshot %
-      value = asset.get_total_trading_days() > 0 ? (float)asset.get_snapshots_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
-      is_valid = true;
-      break;
-    case 17: // Order %
-      value = asset.get_total_trading_days() > 0 ? (float)asset.get_orders_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
-      is_valid = true;
-      break;
-    case 18: // Miss_S
-      value = asset.get_total_trading_days() - asset.get_snapshots_encoded_count();
-      is_valid = true;
-      break;
-    case 19: // Miss_O
-      value = asset.get_total_trading_days() - asset.get_orders_encoded_count();
-      is_valid = true;
+    case 18: // Orders% — 没有分母的标的不参与横截面
+      value = stats.orders_coverage_percent();
+      is_valid = stats.expected_days > 0;
       break;
     default:
       break;
@@ -1207,7 +1441,7 @@ static void RenderNumericAnalysis(
 // ============================================================================
 
 static void RenderCategoricalAnalysis(
-    const std::vector<AssetItem> &assets,
+    const Asset &asset_data,
     const StockInfoMap &stock_info,
     const TableState &table_state,
     int col_idx,
@@ -1218,33 +1452,28 @@ static void RenderCategoricalAnalysis(
   std::vector<std::string> categories;
   std::vector<std::string> codes;
 
-  for (const auto &asset : assets) {
-    if (!ShouldShowAsset(asset, table_state, stock_info))
-      continue;
-
-    std::string exchange_lower = asset.exchange;
-    std::transform(exchange_lower.begin(), exchange_lower.end(),
-                   exchange_lower.begin(), ::tolower);
-    std::string full_code = exchange_lower + "." + asset.asset_code;
-    const StockInfo *info = nullptr;
-    auto it = stock_info.find(full_code);
-    if (it != stock_info.end()) {
-      info = &it->second;
-    }
+  // 过滤结果直接用表格的缓存视图 (见 TableView)
+  for (const size_t id : table_state.view.rows) {
+    const AssetItem &asset = asset_data.items[id];
+    const StockInfo *info = FindStockInfo(asset, stock_info);
 
     std::string category;
     switch (col_idx) {
     case 3: // Board
       category = GetBoardName(GetBoardType(asset.asset_code));
       break;
-    case 4: // ST
-      category = (info && info->isST == "1") ? "ST" : "Normal";
+    case 4: { // ST
+      int level = GetStLevel(info);
+      category = level == 2 ? "*ST" : (level == 1 ? "ST" : "Normal");
       break;
+    }
     case 5: // DL
       category = (info && !info->outDate.empty()) ? "Delisted" : "Active";
       break;
     case 7: // Industry
-      category = info ? info->ind_code : "Unknown";
+      category = (info && !GetIndustryDisplay(*info).empty())
+                     ? GetIndustryDisplay(*info)
+                     : "Unknown";
       break;
     default:
       break;
@@ -1315,20 +1544,23 @@ static void RenderCategoricalAnalysis(
 // ============================================================================
 
 void RenderTabTable(
-    const std::vector<AssetItem> &assets,
+    Asset &asset,
     const StockInfoMap &stock_info,
     TableState &table_state) {
 
-  // Count visible assets
-  size_t visible_count = 0;
-  for (const auto &asset : assets) {
-    if (ShouldShowAsset(asset, table_state, stock_info)) {
-      visible_count++;
-    }
+  const std::vector<AssetItem> &assets = asset.items;
+
+  // 每资产统计由扫描末尾一次算好 (见 ScanService Phase 5), 这里只是等它到位
+  if (asset.asset_stats.size() != assets.size()) {
+    ImGui::TextDisabled("Waiting for database scan...");
+    return;
   }
 
+  // 过滤 + 排序结果的缓存, 顺便给下面的 Showing:x/y 供数
+  SyncView(table_state, asset, stock_info);
+
   // Render filter bar
-  RenderFilterBar(table_state, visible_count, assets.size(), assets, stock_info);
+  RenderFilterBar(table_state, table_state.view.rows.size(), assets.size(), assets, stock_info);
   ImGui::Spacing();
 
   // Get window dimensions
@@ -1341,14 +1573,14 @@ void RenderTabTable(
   // Left: Data Table
   ImGui::BeginChild("LeftTable", ImVec2(left_width, window_height), true,
                     ImGuiWindowFlags_HorizontalScrollbar);
-  RenderDataTable(assets, stock_info, table_state);
+  RenderDataTable(asset, stock_info, table_state);
   ImGui::EndChild();
 
   // Right: Cross-section Analysis Panel
   if (table_state.show_cross_section_panel) {
     ImGui::SameLine();
     ImGui::BeginChild("RightPanel", ImVec2(0, window_height), true);
-    RenderCrossSectionPanel(assets, stock_info, table_state);
+    RenderCrossSectionPanel(asset, stock_info, table_state);
     ImGui::EndChild();
   }
 }

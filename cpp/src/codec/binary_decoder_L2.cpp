@@ -1,35 +1,21 @@
+// 暴露 ZSTD_d_forceIgnoreChecksum (实验参数, 需静态链接宏) — 必须在任何
+// zstd.h 展开之前定义, 所以放在本文件最顶部的 include 之前.
+#define ZSTD_STATIC_LINKING_ONLY
+
 #include "codec/binary_decoder_L2.hpp"
+#include "misc/cross_platform.hpp"
 #include "misc/profiler.hpp"
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <regex>
 #include <sstream>
 
 namespace L2 {
 
 // Constructor with capacity hints
-BinaryDecoder_L2::BinaryDecoder_L2(size_t estimated_snapshots, size_t estimated_orders) {
-  // Pre-reserve space for snapshot vectors
-  temp_hours.reserve(estimated_snapshots);
-  temp_minutes.reserve(estimated_snapshots);
-  temp_seconds.reserve(estimated_snapshots);
-  // temp_highs.reserve(estimated_snapshots);
-  // temp_lows.reserve(estimated_snapshots);
-  temp_closes.reserve(estimated_snapshots);
-  temp_all_bid_vwaps.reserve(estimated_snapshots);
-  temp_all_ask_vwaps.reserve(estimated_snapshots);
-  temp_all_bid_volumes.reserve(estimated_snapshots);
-  temp_all_ask_volumes.reserve(estimated_snapshots);
-
-  for (size_t i = 0; i < 10; ++i) {
-    temp_bid_prices[i].reserve(estimated_snapshots);
-    temp_ask_prices[i].reserve(estimated_snapshots);
-  }
-
+BinaryDecoder_L2::BinaryDecoder_L2(size_t estimated_orders) {
   // Pre-reserve space for order vectors
   temp_order_hours.reserve(estimated_orders);
   temp_order_minutes.reserve(estimated_orders);
@@ -38,22 +24,35 @@ BinaryDecoder_L2::BinaryDecoder_L2(size_t estimated_snapshots, size_t estimated_
   temp_order_prices.reserve(estimated_orders);
   temp_bid_order_ids.reserve(estimated_orders);
   temp_ask_order_ids.reserve(estimated_orders);
+
+  dctx_ = ZSTD_createDCtx();
+  // 跳过帧内容校验: 落盘是原子的 (tmp+rename), 头部自洽 + count 对账已能
+  // 挡住结构性损坏; 每次解码再算 xxh64 是白花的 (特征/因子计算会高频跑
+  // 成千上万遍).
+  ZSTD_DCtx_setParameter(dctx_, ZSTD_d_forceIgnoreChecksum, ZSTD_d_ignoreChecksum);
 }
 
-size_t BinaryDecoder_L2::extract_count_from_filename(const std::string &filepath) {
-  // Extract count from filename pattern: *_snapshots_<count>.bin or *_orders_<count>.bin
-  std::filesystem::path file_path(filepath);
-  std::string filename = file_path.stem().string(); // Get filename without extension
+BinaryDecoder_L2::~BinaryDecoder_L2() {
+  if (dctx_)
+    ZSTD_freeDCtx(dctx_);
+}
 
-  // Look for pattern _<number> at the end
-  std::regex count_regex(R"(_(\d+)$)");
-  std::smatch match;
+// 读 + 校验定宽头. 失败返回 false (文件不存在/太短/magic 或尺寸不自洽).
+static bool read_l2_header(std::ifstream &file, L2FileHeader &header) {
+  file.read(reinterpret_cast<char *>(&header), sizeof(header));
+  return !file.fail() && header.sane();
+}
 
-  if (std::regex_search(filename, match, count_regex)) {
-    return std::stoull(match[1].str());
-  }
+bool BinaryDecoder_L2::read_file_stats(const std::string &filepath, size_t &order_count, size_t &file_size) {
+  L2FileHeader header;
+  if (read_file_head(filepath.c_str(), &header, sizeof(header)) != sizeof(header))
+    return false;
+  if (!header.sane())
+    return false;
 
-  return 0; // Return 0 if count cannot be extracted
+  order_count = header.order_count();
+  file_size = sizeof(header) + header.compressed_size;
+  return true;
 }
 
 std::string BinaryDecoder_L2::time_to_string(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond_10ms) {
@@ -69,16 +68,9 @@ std::string BinaryDecoder_L2::time_to_string(uint8_t hour, uint8_t minute, uint8
   return oss.str();
 }
 
-inline float BinaryDecoder_L2::price_to_rmb(uint16_t price_ticks) {
-  return static_cast<float>(price_ticks) * 0.01; // Convert from 0.01 RMB units to RMB
-}
-
-inline float BinaryDecoder_L2::vwap_to_rmb(uint16_t vwap_ticks) {
-  return static_cast<float>(vwap_ticks) * 0.001; // Convert from 0.001 RMB units to RMB
-}
-
-inline uint32_t BinaryDecoder_L2::get_volume(uint32_t volume_shares) {
-  return volume_shares; // Already in shares, no conversion needed
+// 只给下面的 print_* 用 —— 展示用的单位换算, 不属于解码热路径.
+static float price_to_rmb(uint32_t price_ticks) {
+  return static_cast<float>(price_ticks) * 0.01; // 0.01 RMB units → RMB
 }
 
 const char *BinaryDecoder_L2::order_type_to_string(uint8_t order_type) {
@@ -119,132 +111,16 @@ const char *BinaryDecoder_L2::order_dir_to_char(uint8_t order_dir) {
   return order_dir == 0 ? "B" : "S";
 }
 
-void BinaryDecoder_L2::print_snapshot(const Snapshot &snapshot, size_t index) {
-  std::cout << "=== Snapshot " << index << " ===" << std::endl;
-  std::cout << "Time: " << time_to_string(snapshot.hour, snapshot.minute, snapshot.second) << std::endl;
-  std::cout << "Close: " << std::fixed << std::setprecision(2) << price_to_rmb(snapshot.close) << " RMB" << std::endl;
-  // std::cout << "High: " << price_to_rmb(snapshot.high) << " RMB" << std::endl;
-  // std::cout << "Low: " << price_to_rmb(snapshot.low) << " RMB" << std::endl;
-  std::cout << "Volume: " << get_volume(snapshot.volume) << " shares" << std::endl;
-  std::cout << "Turnover: " << snapshot.turnover << " fen" << std::endl;
-  std::cout << "Trade Count (incremental): " << static_cast<int>(snapshot.trade_count) << std::endl;
-
-  std::cout << "Bid Prices: ";
-  for (int i = 0; i < 10; i++) {
-    if (snapshot.bid_price_ticks[i] > 0) {
-      std::cout << price_to_rmb(snapshot.bid_price_ticks[i]) << " ";
-    }
-  }
-  std::cout << std::endl;
-
-  std::cout << "Ask Prices: ";
-  for (int i = 0; i < 10; i++) {
-    if (snapshot.ask_price_ticks[i] > 0) {
-      std::cout << price_to_rmb(snapshot.ask_price_ticks[i]) << " ";
-    }
-  }
-  std::cout << std::endl;
-
-  std::cout << "VWAP - Bid: " << vwap_to_rmb(snapshot.all_bid_vwap)
-            << ", Ask: " << vwap_to_rmb(snapshot.all_ask_vwap) << std::endl;
-  std::cout << "Total Volume - Bid: " << get_volume(snapshot.all_bid_volume)
-            << ", Ask: " << get_volume(snapshot.all_ask_volume) << std::endl;
-  std::cout << std::endl;
-}
-
 void BinaryDecoder_L2::print_order(const Order &order, size_t index) {
   std::cout << "=== Order " << index << " ===" << std::endl;
   std::cout << "Time: " << time_to_string(order.hour, order.minute, order.second, order.millisecond) << std::endl;
   std::cout << "Type: " << order_type_to_string(order.order_type) << std::endl;
   std::cout << "Direction: " << order_dir_to_string(order.order_dir) << std::endl;
   std::cout << "Price: " << std::fixed << std::setprecision(2) << price_to_rmb(order.price) << " RMB" << std::endl;
-  std::cout << "Volume: " << get_volume(order.volume) << " shares" << std::endl;
+  std::cout << "Volume: " << order.volume << " shares" << std::endl;
   std::cout << "Bid Order ID: " << order.bid_order_id << std::endl;
   std::cout << "Ask Order ID: " << order.ask_order_id << std::endl;
   std::cout << std::endl;
-}
-
-void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshots) {
-  // hr mn sc trd   vol   turnover  high   low close   bp0   bp1   bp2   bp3   bp4   bp5   bp6   bp7   bp8   bp9   bv0   bv1   bv2   bv3   bv4   bv5   bv6   bv7   bv8   bv9   ap0   ap1   ap2   ap3   ap4   ap5   ap6   ap7   ap8   ap9   av0   av1   av2   av3   av4   av5   av6   av7   av8   av9 d b_vwp a_vwp b_vol a_vol
-  // 14 48 45 157     2       1320   665   660   660   660   659   658   657   656   655   654   653   652   651  3854  3831  2879  4500  1294   813   301  1449   714  1236   661   662   663   664   665   666   667   668   669   670  4094  4526  3664  4811  7374  3123  3026  2396  3277  3513 0  6339  6864 53296 65535
-  std::cout << "=== All Snapshots ===" << std::endl;
-
-  // Print aligned header using compile-time bit width calculations
-
-  std::cout << std::setw(HOUR_WIDTH) << std::right << "hr" << " "
-            << std::setw(MINUTE_WIDTH) << std::right << "mn" << " "
-            << std::setw(SECOND_WIDTH) << std::right << "sc" << " "
-            << std::setw(TRADE_COUNT_WIDTH) << std::right << "trd" << " "
-            << std::setw(VOLUME_WIDTH) << std::right << "vol" << " "
-            << std::setw(TURNOVER_WIDTH) << std::right << "turnover" << " "
-            // << std::setw(PRICE_WIDTH) << std::right << "high" << " "
-            // << std::setw(PRICE_WIDTH) << std::right << "low" << " "
-            << std::setw(PRICE_WIDTH) << std::right << "close" << " ";
-
-  // bid_price_ticks[10] - using price bit width from schema
-  for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(PRICE_WIDTH) << std::right << ("bp" + std::to_string(i)) << " ";
-  }
-
-  // bid_volumes[10] - using schema-derived width
-  for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(BID_VOLUME_WIDTH) << std::right << ("bv" + std::to_string(i)) << " ";
-  }
-
-  // ask_price_ticks[10] - using price bit width from schema
-  for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(PRICE_WIDTH) << std::right << ("ap" + std::to_string(i)) << " ";
-  }
-
-  // ask_volumes[10] - using schema-derived width
-  for (int i = 0; i < 10; i++) {
-    std::cout << std::setw(ASK_VOLUME_WIDTH) << std::right << ("av" + std::to_string(i)) << " ";
-  }
-
-  std::cout << std::setw(DIRECTION_WIDTH) << std::right << "d" << " "
-            << std::setw(VWAP_WIDTH) << std::right << "b_vwp" << " "
-            << std::setw(VWAP_WIDTH) << std::right << "a_vwp" << " "
-            << std::setw(TOTAL_VOLUME_WIDTH) << std::right << "b_vol" << " "
-            << std::setw(TOTAL_VOLUME_WIDTH) << std::right << "a_vol" << std::endl;
-
-  // Print data rows with aligned formatting using compile-time bit width calculations
-  for (const auto &snapshot : snapshots) {
-    std::cout << std::setw(HOUR_WIDTH) << std::right << static_cast<int>(snapshot.hour) << " "
-              << std::setw(MINUTE_WIDTH) << std::right << static_cast<int>(snapshot.minute) << " "
-              << std::setw(SECOND_WIDTH) << std::right << static_cast<int>(snapshot.second) << " "
-              << std::setw(TRADE_COUNT_WIDTH) << std::right << static_cast<int>(snapshot.trade_count) << " "
-              << std::setw(VOLUME_WIDTH) << std::right << snapshot.volume << " "
-              << std::setw(TURNOVER_WIDTH) << std::right << snapshot.turnover << " "
-              // << std::setw(PRICE_WIDTH) << std::right << snapshot.high << " "
-              // << std::setw(PRICE_WIDTH) << std::right << snapshot.low << " "
-              << std::setw(PRICE_WIDTH) << std::right << snapshot.close << " ";
-
-    // Output bid_price_ticks[10] - using price bit width from schema
-    for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(PRICE_WIDTH) << std::right << snapshot.bid_price_ticks[i] << " ";
-    }
-
-    // Output bid_volumes[10] - using schema-derived width
-    for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(BID_VOLUME_WIDTH) << std::right << snapshot.bid_volumes[i] << " ";
-    }
-
-    // Output ask_price_ticks[10] - using price bit width from schema
-    for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(PRICE_WIDTH) << std::right << snapshot.ask_price_ticks[i] << " ";
-    }
-
-    // Output ask_volumes[10] - using schema-derived width
-    for (int i = 0; i < 10; i++) {
-      std::cout << std::setw(ASK_VOLUME_WIDTH) << std::right << snapshot.ask_volumes[i] << " ";
-    }
-
-    std::cout << std::setw(DIRECTION_WIDTH) << std::right << (snapshot.direction ? 1 : 0) << " "
-              << std::setw(VWAP_WIDTH) << std::right << snapshot.all_bid_vwap << " "
-              << std::setw(VWAP_WIDTH) << std::right << snapshot.all_ask_vwap << " "
-              << std::setw(TOTAL_VOLUME_WIDTH) << std::right << snapshot.all_bid_volume << " "
-              << std::setw(TOTAL_VOLUME_WIDTH) << std::right << snapshot.all_ask_volume << std::endl;
-  }
 }
 
 void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
@@ -282,96 +158,12 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
 }
 
 // decoder functions
-const Snapshot *BinaryDecoder_L2::decode_snapshots_stream(const std::string &filepath, size_t &snapshot_num) {
-  // Extract count from filename to calculate required buffer size
-  size_t estimated_count = extract_count_from_filename(filepath);
-  if (estimated_count == 0) [[unlikely]] {
-    std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
-    return nullptr;
-  }
-
-  // Calculate buffer sizes
-  constexpr size_t header_size = sizeof(size_t); // size_t count
-  const size_t snapshots_size = estimated_count * sizeof(Snapshot);
-  const size_t decompressed_size = header_size + snapshots_size;
-
-  // Open file and read compression metadata
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to open file: " << filepath << std::endl;
-    return nullptr;
-  }
-
-  size_t original_size, compressed_size;
-  file.read(reinterpret_cast<char *>(&original_size), sizeof(original_size));
-  file.read(reinterpret_cast<char *>(&compressed_size), sizeof(compressed_size));
-
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
-    return nullptr;
-  }
-
-  // Verify size matches expectation
-  if (original_size != decompressed_size) [[unlikely]] {
-    std::cerr << "L2 Decoder: Size mismatch - expected " << decompressed_size
-              << " but header says " << original_size << std::endl;
-    return nullptr;
-  }
-
-  // Resize reusable buffers if needed (only grows, never shrinks - amortized O(1))
-  if (stream_compressed_buffer_.size() < compressed_size) {
-    stream_compressed_buffer_.resize(compressed_size);
-  }
-  if (stream_decompression_buffer_.size() < decompressed_size) {
-    stream_decompression_buffer_.resize(decompressed_size);
-  }
-
-  // Read compressed data into reusable buffer
-  file.read(stream_compressed_buffer_.data(), compressed_size);
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
-    return nullptr;
-  }
-
-  // Streaming decompression: decompress directly to reusable buffer (zero-allocation hot path)
-  size_t decompressed_bytes = ZSTD_decompress(
-      stream_decompression_buffer_.data(), decompressed_size,
-      stream_compressed_buffer_.data(), compressed_size);
-
-  if (ZSTD_isError(decompressed_bytes)) [[unlikely]] {
-    std::cerr << "L2 Decoder: Decompression failed: " << ZSTD_getErrorName(decompressed_bytes) << std::endl;
-    return nullptr;
-  }
-
-  // Extract and verify count from decompressed header
-  size_t count;
-  std::memcpy(&count, stream_decompression_buffer_.data(), header_size);
-
-  if (count != estimated_count) [[unlikely]] {
-    std::cerr << "L2 Decoder: Count mismatch - filename says " << estimated_count
-              << " but data says " << count << std::endl;
-    return nullptr;
-  }
-
-  // Return pointer to Snapshot array (skip header) - ZERO COPY
-  snapshot_num = count;
-  return reinterpret_cast<const Snapshot *>(stream_decompression_buffer_.data() + header_size);
-}
-
 const Order *BinaryDecoder_L2::decode_orders_stream(const std::string &filepath, size_t &order_num) {
-    // Extract count from filename to calculate required buffer size
-  size_t estimated_count = extract_count_from_filename(filepath);
-    if (estimated_count == 0) [[unlikely]] {
-      std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
-      return nullptr;
-  }
+  // 缓冲尺寸直接由文件头的 raw_size 决定 —— 它已经精确等于
+  // [u64 count][Order × count] 的长度, 头就是唯一来源 (见 L2FileHeader).
+  constexpr size_t count_size = sizeof(uint64_t); // u64 count
 
-  // Calculate buffer sizes
-  constexpr size_t header_size = sizeof(size_t); // size_t count
-  const size_t orders_size = estimated_count * sizeof(Order);
-  const size_t decompressed_size = header_size + orders_size;
-
-  size_t original_size, compressed_size;
+  L2FileHeader header;
   {
     TraceN("FileIO");
     // Open file and read compression metadata
@@ -381,31 +173,24 @@ const Order *BinaryDecoder_L2::decode_orders_stream(const std::string &filepath,
       return nullptr;
     }
 
-    file.read(reinterpret_cast<char *>(&original_size), sizeof(original_size));
-    file.read(reinterpret_cast<char *>(&compressed_size), sizeof(compressed_size));
-
-    if (file.fail()) [[unlikely]] {
-      std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
+    if (!read_l2_header(file, header)) [[unlikely]] {
+      std::cerr << "L2 Decoder: Corrupt/legacy header (magic/version/sizes), re-encode: "
+                << filepath << std::endl;
       return nullptr;
     }
 
-    // Verify size matches expectation
-    if (original_size != decompressed_size) [[unlikely]] {
-      std::cerr << "L2 Decoder: Size mismatch - expected " << decompressed_size
-                << " but header says " << original_size << std::endl;
-      return nullptr;
-    }
+    last_price_base_ = header.price_base;
 
     // Resize reusable buffers if needed (only grows, never shrinks - amortized O(1))
-    if (stream_compressed_buffer_.size() < compressed_size) {
-      stream_compressed_buffer_.resize(compressed_size);
+    if (stream_compressed_buffer_.size() < header.compressed_size) {
+      stream_compressed_buffer_.resize(header.compressed_size);
     }
-    if (stream_decompression_buffer_.size() < decompressed_size) {
-      stream_decompression_buffer_.resize(decompressed_size);
+    if (stream_decompression_buffer_.size() < header.raw_size) {
+      stream_decompression_buffer_.resize(header.raw_size);
     }
 
     // Read compressed data into reusable buffer
-    file.read(stream_compressed_buffer_.data(), compressed_size);
+    file.read(stream_compressed_buffer_.data(), static_cast<std::streamsize>(header.compressed_size));
     if (file.fail()) [[unlikely]] {
       std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
       return nullptr;
@@ -414,30 +199,33 @@ const Order *BinaryDecoder_L2::decode_orders_stream(const std::string &filepath,
 
   {
     TraceN("ZstdDecompress");
-    // Streaming decompression: decompress directly to reusable buffer (zero-allocation hot path)
-    size_t decompressed_bytes = ZSTD_decompress(
-        stream_decompression_buffer_.data(), decompressed_size,
-        stream_compressed_buffer_.data(), compressed_size);
+    // 复用 DCtx (已配置跳过帧内容校验), 直接解到复用缓冲 — 热路径零分配
+    size_t decompressed_bytes = ZSTD_decompressDCtx(
+        dctx_,
+        stream_decompression_buffer_.data(), header.raw_size,
+        stream_compressed_buffer_.data(), header.compressed_size);
 
-    if (ZSTD_isError(decompressed_bytes)) [[unlikely]] {
-      std::cerr << "L2 Decoder: Decompression failed: " << ZSTD_getErrorName(decompressed_bytes) << std::endl;
+    if (ZSTD_isError(decompressed_bytes) || decompressed_bytes != header.raw_size) [[unlikely]] {
+      std::cerr << "L2 Decoder: Decompression failed: "
+                << (ZSTD_isError(decompressed_bytes) ? ZSTD_getErrorName(decompressed_bytes) : "size mismatch")
+                << ": " << filepath << std::endl;
       return nullptr;
     }
   }
 
-  // Extract and verify count from decompressed header
-  size_t count;
-  std::memcpy(&count, stream_decompression_buffer_.data(), header_size);
+  // 解压后头部的 count 与外层 raw_size 推出的条数必须一致
+  uint64_t count;
+  std::memcpy(&count, stream_decompression_buffer_.data(), count_size);
 
-  if (count != estimated_count) [[unlikely]] {
-    std::cerr << "L2 Decoder: Count mismatch - filename says " << estimated_count
-              << " but data says " << count << std::endl;
+  if (count != header.order_count()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Count mismatch - header implies " << header.order_count()
+              << " but data says " << count << ": " << filepath << std::endl;
     return nullptr;
   }
 
   // Return pointer to Order array (skip header) - ZERO COPY
   order_num = count;
-  return reinterpret_cast<const Order *>(stream_decompression_buffer_.data() + header_size);
+  return reinterpret_cast<const Order *>(stream_decompression_buffer_.data() + count_size);
 }
 
 // Zstandard decompression helper function (pure standard decompression)
@@ -448,26 +236,24 @@ bool BinaryDecoder_L2::read_and_decompress_data(const std::string &filepath, voi
     std::exit(1);
   }
 
-  // Read header: original size and compressed size
-  size_t original_size, compressed_size;
-  file.read(reinterpret_cast<char *>(&original_size), sizeof(original_size));
-  file.read(reinterpret_cast<char *>(&compressed_size), sizeof(compressed_size));
-
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
+  // Read fixed-width self-describing header
+  L2FileHeader header;
+  if (!read_l2_header(file, header)) [[unlikely]] {
+    std::cerr << "L2 Decoder: Corrupt/legacy header: " << filepath << std::endl;
     std::exit(1);
   }
 
   // Verify expected size matches
-  if (original_size != expected_size) [[unlikely]] {
+  if (header.raw_size != expected_size) [[unlikely]] {
     std::cerr << "L2 Decoder: Size mismatch - expected " << expected_size
-              << " but header says " << original_size << std::endl;
+              << " but header says " << header.raw_size << std::endl;
     std::exit(1);
   }
+  const size_t compressed_size = header.compressed_size;
 
   // Read compressed data
   auto compressed_buffer = std::make_unique<char[]>(compressed_size);
-  file.read(compressed_buffer.get(), compressed_size);
+  file.read(compressed_buffer.get(), static_cast<std::streamsize>(compressed_size));
 
   if (file.fail()) [[unlikely]] {
     std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
